@@ -1,4 +1,4 @@
-"""``/start`` and ``/help`` handlers, plus top-level menu navigation."""
+"""``/start``, ``/menu`` and ``/help`` handlers, plus top-level navigation."""
 
 from __future__ import annotations
 
@@ -15,29 +15,34 @@ from bot.db.repositories import get_or_create_user, get_user_settings, record_au
 from bot.handlers.file_ops import prompt_for_file
 from bot.ui.emoji import Emoji
 from bot.ui.keyboards import data_tools_menu, file_tools_menu, main_menu
+from bot.ui.render import safe_edit
 
 router = Router(name="start_help")
 
-_FILE_PROMPT_ACTIONS = {"doc2txt", "csv", "split", "clean", "dedup", "addfile", "find", "country", "bank", "live"}
+_FILE_PROMPT_ACTIONS = {
+    "doc2txt", "csv", "split", "clean", "dedup", "addfile", "find", "country", "bank", "live",
+}
 
 HELP_TEXT = (
-    f"{Emoji.HELP} <b>Commands</b>\n\n"
+    f"{Emoji.HELP} <b>Command reference</b>\n\n"
     f"{Emoji.FILE} <b>File tools</b>\n"
     "<code>/split</code> — split a TXT/CSV into smaller files\n"
     "<code>/clean</code> — clean &amp; validate a dataset\n"
     "<code>/dedup</code> — remove duplicate records\n"
-    f"{Emoji.CONVERT} <code>/doc2txt</code> — DOC/DOCX \u2192 TXT\n"
-    f"{Emoji.CSV} <code>/csv</code> — CSV \u2192 TXT\n"
-    f"{Emoji.MERGE} <code>/addfile</code> \u00b7 <code>/merge</code> \u00b7 <code>/clearqueue</code>\n\n"
+    f"{Emoji.CONVERT} <code>/doc2txt</code> — DOC/DOCX → TXT\n"
+    f"{Emoji.CSV} <code>/csv</code> — CSV → TXT\n"
+    f"{Emoji.MERGE} <code>/addfile</code> · <code>/merge</code> · <code>/clearqueue</code>\n\n"
     f"{Emoji.SEARCH} <b>Data tools</b>\n"
-    "<code>/find</code> \u00b7 <code>/country</code> \u00b7 <code>/pick</code> \u00b7 "
-    "<code>/bank</code> \u00b7 <code>/pickbank</code>\n\n"
-    f"{Emoji.SCRAPE} <b>Authorized sources</b>\n"
-    "<code>/scrape</code> \u00b7 <code>/plogin</code> \u00b7 <code>/myaccounts</code> \u00b7 "
-    "<code>/private_scrape</code>\n\n"
+    "<code>/find</code> · <code>/country</code> · <code>/pick</code> · "
+    "<code>/bank</code> · <code>/pickbank</code>\n\n"
     f"{Emoji.SECURITY} <b>Security testing</b>\n"
     "<code>/live</code> — offline validation of authorized <b>test data only</b>\n\n"
-    f"{Emoji.SETTINGS} <code>/settings</code> \u00b7 <code>/jobs</code> \u00b7 <code>/cancel</code>"
+    f"{Emoji.KEY} <b>Access</b>\n"
+    "<code>/mykey</code> · <code>/redeem</code> · <code>/id</code>\n\n"
+    f"{Emoji.SCRAPE} <b>Authorized sources</b>\n"
+    "<code>/scrape</code> · <code>/private_scrape</code> · <code>/myaccounts</code> · "
+    "<code>/plogin</code>\n\n"
+    f"{Emoji.SETTINGS} <code>/settings</code> · <code>/jobs</code> · <code>/cancel</code>"
 )
 
 SECURITY_NOTE = (
@@ -46,7 +51,7 @@ SECURITY_NOTE = (
 )
 
 _TODO_SECTIONS = {
-    "menu:file": ("File tools", "Document and dataset operations are available from the File Tools menu."),
+    "menu:file": ("File tools", "Choose a file operation from the File Tools menu."),
     "menu:data": ("Data tools", "Use /find, /country, /pick, /bank or /pickbank."),
     "menu:security": ("Security testing", "Use /live for offline test-data validation."),
     "menu:sources": ("Authorized sources", "Use /scrape, /private_scrape, /myaccounts or /plogin."),
@@ -54,11 +59,14 @@ _TODO_SECTIONS = {
 
 
 def welcome_text(name: str | None) -> str:
-    greeting = f", {html.escape(name)}" if name else ""
+    greeting = f", <b>{html.escape(name)}</b>" if name else ""
     return (
-        f"{Emoji.START} <b>Telegram File Processing Bot</b>\n\n"
-        f"Welcome{greeting}! I process and organize files and datasets: "
-        "convert, split, clean, deduplicate, merge and search.\n\n"
+        f"{Emoji.START} <b>Telegram File Processing Bot</b>\n"
+        "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
+        f"Welcome{greeting}! Process, organise and search your files and datasets.\n\n"
+        f"{Emoji.FILE} <b>File tools</b> — convert, split, clean, dedup, merge\n"
+        f"{Emoji.SEARCH} <b>Data tools</b> — search, group by country/bank, export\n"
+        f"{Emoji.SECURITY} <b>Security</b> — offline validation of test data\n\n"
         f"{SECURITY_NOTE}"
     )
 
@@ -86,6 +94,14 @@ async def handle_start(message: Message) -> None:
     await message.answer(welcome_text(tg_user.first_name), reply_markup=main_menu())
 
 
+@router.message(Command("menu"))
+async def handle_menu(message: Message) -> None:
+    await message.answer(
+        f"{Emoji.FILE} <b>Main menu</b>\n\nChoose a section:",
+        reply_markup=main_menu(),
+    )
+
+
 @router.message(Command("help"))
 async def handle_help(message: Message) -> None:
     await message.answer(HELP_TEXT)
@@ -93,36 +109,34 @@ async def handle_help(message: Message) -> None:
 
 @router.callback_query(F.data == "menu:help")
 async def menu_help(callback: CallbackQuery) -> None:
-    if callback.message is not None:
-        await callback.message.edit_text(HELP_TEXT, reply_markup=main_menu())
+    await safe_edit(callback.message, HELP_TEXT, reply_markup=main_menu())
     await callback.answer()
 
 
 @router.callback_query(F.data == "menu:back")
 async def menu_back(callback: CallbackQuery) -> None:
     name = callback.from_user.first_name if callback.from_user else None
-    if callback.message is not None:
-        await callback.message.edit_text(welcome_text(name), reply_markup=main_menu())
+    await safe_edit(callback.message, welcome_text(name), reply_markup=main_menu())
     await callback.answer()
 
 
 @router.callback_query(F.data == "menu:file")
 async def menu_file(callback: CallbackQuery) -> None:
-    if callback.message is not None:
-        await callback.message.edit_text(
-            f"{Emoji.FILE} <b>File Tools</b>\n\nChoose an operation:",
-            reply_markup=file_tools_menu(),
-        )
+    await safe_edit(
+        callback.message,
+        f"{Emoji.FILE} <b>File Tools</b>\n\nChoose an operation:",
+        reply_markup=file_tools_menu(),
+    )
     await callback.answer()
 
 
 @router.callback_query(F.data == "menu:data")
 async def menu_data(callback: CallbackQuery) -> None:
-    if callback.message is not None:
-        await callback.message.edit_text(
-            f"{Emoji.SEARCH} <b>Data Tools</b>\n\nChoose an operation:",
-            reply_markup=data_tools_menu(),
-        )
+    await safe_edit(
+        callback.message,
+        f"{Emoji.SEARCH} <b>Data Tools</b>\n\nChoose an operation:",
+        reply_markup=data_tools_menu(),
+    )
     await callback.answer()
 
 

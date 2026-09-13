@@ -117,6 +117,12 @@ class Settings(BaseSettings):
         without this the app would look for a synchronous driver.
         """
         url = (value or "").strip()
+        if "${{" in url or "${" in url:
+            raise ValueError(
+                "DATABASE_URL still contains an unresolved Railway reference "
+                f"({url!r}). Pick the Postgres service's DATABASE_URL with the "
+                "reference picker, or use DATABASE_PRIVATE_URL."
+            )
         for prefix in ("postgresql+psycopg2://", "postgresql://", "postgres://"):
             if url.startswith(prefix):
                 return "postgresql+asyncpg://" + url[len(prefix):]

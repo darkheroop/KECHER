@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from aiogram import BaseMiddleware
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery, Message, TelegramObject
 
 from bot.config import Settings
@@ -37,6 +38,29 @@ def _command_of(event: TelegramObject) -> str | None:
         return None
     token = text[1:].split()[0].split("@")[0]
     return token.lower()
+
+
+class SafeEditMiddleware(BaseMiddleware):
+    """Swallow the benign "message is not modified" error from re-tapped buttons.
+
+    Without this, tapping the same button twice makes the callback appear dead
+    (Telegram rejects an edit that does not change the message).
+    """
+
+    async def __call__(
+        self,
+        handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
+        data: dict[str, Any],
+    ) -> Any:
+        try:
+            return await handler(event, data)
+        except TelegramBadRequest as exc:
+            if "message is not modified" in str(exc):
+                if isinstance(event, CallbackQuery):
+                    await event.answer()
+                return None
+            raise
 
 
 class AccessMiddleware(BaseMiddleware):

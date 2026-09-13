@@ -21,12 +21,17 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from bot.config import Settings, get_settings
 from bot.db.engine import dispose_engine, init_db
 from bot.handlers import routers
+from bot.handlers.errors import register_error_handler
 from bot.jobs.handlers import register_handlers
 from bot.jobs.manager import JobManager
 from bot.jobs.progress import TelegramNotifier
 from bot.jobs.sender import TelegramSender
 from bot.logging_setup import setup_logging
-from bot.security.middleware import AccessMiddleware, RateLimitMiddleware
+from bot.security.middleware import (
+    AccessMiddleware,
+    RateLimitMiddleware,
+    SafeEditMiddleware,
+)
 from bot.security.ratelimit import SlidingWindowLimiter
 from bot.services.file_manager import FileManager
 from bot.services.retention import reap_expired_files
@@ -93,6 +98,10 @@ async def run() -> None:
 
     dispatcher = Dispatcher(storage=MemoryStorage())
     dispatcher.include_routers(*routers)
+    register_error_handler(dispatcher)
+
+    # Outermost: swallow benign re-tap edit errors so buttons never look dead.
+    dispatcher.callback_query.outer_middleware(SafeEditMiddleware())
 
     if settings.rate_limit_per_minute > 0:
         limiter = SlidingWindowLimiter(settings.rate_limit_per_minute, window=60.0)

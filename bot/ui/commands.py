@@ -21,6 +21,7 @@ DESCRIPTION = (
 
 COMMANDS: list[BotCommand] = [
     BotCommand(command="start", description="Start the bot"),
+    BotCommand(command="menu", description="Open the main menu"),
     BotCommand(command="help", description="Show all commands"),
     BotCommand(command="settings", description="Preferences: UI mode, cleanup, language"),
     BotCommand(command="jobs", description="View background jobs"),
