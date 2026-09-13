@@ -1,0 +1,11 @@
+[project]
+name = "telegram-file-bot"
+version = "0.1.0"
+description = "Telegram file processing & authorized security-testing bot"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]

@@ -1,0 +1,22 @@
+# Secrets & runtime data (never bake into the image)
+.env
+var/
+*.session
+
+# VCS / tooling
+.git
+.gitignore
+.venv
+venv
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Tests & docs (not needed at runtime)
+tests/
+*.md
+Dockerfile
+docker-compose.yml
+.dockerignore

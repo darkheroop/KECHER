@@ -1,0 +1,26 @@
+# --- Telegram ---
+aiogram>=3.15,<4
+
+# --- Database (PostgreSQL required in production; SQLite used for tests) ---
+SQLAlchemy>=2.0.36,<3
+asyncpg>=0.30.0
+aiosqlite>=0.20.0
+alembic>=1.14
+
+# --- Config / settings ---
+pydantic>=2.10,<3
+pydantic-settings>=2.7,<3
+
+# --- File / text processing ---
+python-docx>=1.1.2
+charset-normalizer>=3.4.0
+aiofiles>=24.1.0
+
+# --- Optional: authorized Telegram user-account access (Telethon) ---
+# Required only for /scrape and /private_scrape. Uncomment to enable.
+# telethon>=1.36
+
+# --- Testing ---
+pytest>=8.3
+pytest-asyncio>=0.24
+pytest-cov>=6.0

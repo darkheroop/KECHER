@@ -1,0 +1,24 @@
+# Secrets
+.env
+*.pem
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# Runtime data
+var/
+logs/
+*.db
+*.sqlite3
+*.log
+
+# OS
+Thumbs.db
+.DS_Store

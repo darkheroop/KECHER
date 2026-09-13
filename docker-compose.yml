@@ -1,0 +1,35 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: bot
+      POSTGRES_PASSWORD: bot
+      POSTGRES_DB: tgbot
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bot -d tgbot"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  bot:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://bot:bot@db:5432/tgbot
+      STORAGE_ROOT: /app/var/storage
+      TELEGRAM_SESSION_DIR: /app/var/sessions
+      TELEGRAM_ACCOUNTS_FILE: /app/var/telegram_accounts.json
+      ENVIRONMENT: production
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - botdata:/app/var
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  botdata:
