@@ -11,7 +11,7 @@ from aiogram.types import CallbackQuery, Message
 from bot.config import Settings
 from bot.db.engine import session_scope
 from bot.db.enums import UIMode
-from bot.db.repositories import get_user_settings, update_user_settings
+from bot.db.repositories import get_or_create_user, get_user_settings, update_user_settings
 from bot.handlers.common import ensure_user
 from bot.handlers.cards import _run_merge
 from bot.security.access import is_admin
@@ -64,6 +64,26 @@ def welcome_text() -> str:
     )
 
 
+def onboarding_text(name: str | None) -> str:
+    who = f", <b>{html.escape(name)}</b>" if name else ""
+    return (
+        f"{HEADER}\n"
+        "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
+        f"Welcome{who}! Here's how it works in 20 seconds 👇\n\n"
+        f"{Emoji.PAGE} <b>1 · Send a .txt</b> — or reply to one you already sent.\n\n"
+        f"{Emoji.CLEAN} <b>2 · Run a command</b>\n"
+        f"   <code>/clean</code> — extract valid records\n"
+        f"   <code>/live</code> — keep Luhn-valid records\n"
+        f"   <code>/filter 123456</code> — every serial of a series\n"
+        f"   <code>/filter canada</code> — lines above a keyword\n"
+        f"   <code>/split 5</code> · <code>/dedup</code> · <code>/addfile</code>+<code>/merge</code>\n\n"
+        f"{Emoji.KEY} <b>3 · Access</b> — a key is required.\n"
+        "   Redeem one with <code>/redeem YOUR-KEY</code>, or ask with /request.\n\n"
+        f"{Emoji.CARD} Record: <code>serial|date|time|count</code>\n"
+        "   e.g. <code>1234567891234567|02|2028|555</code>"
+    )
+
+
 def _is_button_mode(ui_mode: str) -> bool:
     return ui_mode != UIMode.COMMANDS.value
 
@@ -83,14 +103,44 @@ async def _is_admin(obj, settings: Settings) -> bool:  # noqa: ANN001
 
 @router.message(CommandStart())
 async def handle_start(message: Message, settings: Settings) -> None:
+    tg_user = message.from_user
+    assert tg_user is not None
     async with session_scope() as session:
-        user = await ensure_user(session, message.from_user)
+        user, created = await get_or_create_user(
+            session,
+            tg_user.id,
+            username=tg_user.username,
+            first_name=tg_user.first_name,
+        )
         settings_row = await get_user_settings(session, user.id)
         admin = is_admin(user, settings)
+
+    first_time = onboarding_text(tg_user.first_name) if created else welcome_text()
     if _is_button_mode(settings_row.ui_mode):
-        await message.answer(welcome_text(), reply_markup=main_menu(admin))
+        await message.answer(first_time, reply_markup=main_menu(admin))
     else:
-        await message.answer(HELP_TEXT)
+        await message.answer(first_time + "\n\n" + HELP_TEXT if created else HELP_TEXT)
+
+
+@router.message(Command("emojis"))
+async def handle_emojis(message: Message) -> None:
+    from bot.ui import emoji as emoji_module
+
+    available = emoji_module.names()
+    custom = emoji_module.current_custom()
+    lines = [
+        f"{Emoji.SETTINGS} <b>Emoji customization</b>",
+        "",
+        "Set <code>CUSTOM_EMOJI_IDS</code> in your environment as JSON "
+        "mapping a name to a Telegram custom-emoji id:",
+        '<code>{"SUCCESS":"5368324170671202286","CLEAN":"5368324170671202286"}</code>',
+        "",
+        f"Currently customised: <b>{len(custom)}</b>",
+        "",
+        "<b>Available names</b>",
+        " ".join(f"<code>{name}</code>" for name in available),
+    ]
+    await message.answer("\n".join(lines))
 
 
 @router.message(Command("menu"))

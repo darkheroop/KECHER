@@ -426,12 +426,13 @@ async def record_audit(
 # Access keys / licensing
 # --------------------------------------------------------------------------- #
 async def _unique_key_code(session: AsyncSession) -> str:
+    prefix = get_settings().key_prefix
     for _ in range(20):
-        code = generate_code()
+        code = generate_code(prefix=prefix)
         exists = await session.scalar(select(AccessKey.id).where(AccessKey.code == code))
         if exists is None:
             return code
-    return generate_code(groups=4)  # pragma: no cover - astronomically unlikely
+    return generate_code(prefix=prefix, groups=4)  # pragma: no cover
 
 
 async def create_access_keys(
@@ -510,6 +511,24 @@ async def revoke_access_key(session: AsyncSession, code: str) -> bool:
     key.revoked = True
     await session.flush()
     return True
+
+
+async def revoke_access_key_by_id(session: AsyncSession, key_id: int) -> bool:
+    key = await session.get(AccessKey, key_id)
+    if key is None:
+        return False
+    key.revoked = True
+    await session.flush()
+    return True
+
+
+async def get_users_by_ids(
+    session: AsyncSession, user_ids: list[int]
+) -> dict[int, User]:
+    if not user_ids:
+        return {}
+    result = await session.scalars(select(User).where(User.id.in_(user_ids)))
+    return {user.id: user for user in result}
 
 
 async def set_user_admin(

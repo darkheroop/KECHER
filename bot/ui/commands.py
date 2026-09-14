@@ -36,6 +36,7 @@ PUBLIC_COMMANDS: list[BotCommand] = [
     BotCommand(command="scrape", description="Import from a source (coming soon)"),
     BotCommand(command="findbin", description="Find BIN info (coming soon)"),
     BotCommand(command="settings", description="Button / text mode"),
+    BotCommand(command="emojis", description="How to customise the emojis"),
     BotCommand(command="id", description="Your ID and access status"),
     BotCommand(command="mykey", description="Check your access"),
     BotCommand(command="redeem", description="Redeem an access key"),

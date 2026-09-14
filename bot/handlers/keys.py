@@ -30,12 +30,14 @@ from bot.db.repositories import (
     get_bot_setting,
     get_or_create_user,
     get_user_by_telegram_id,
+    get_users_by_ids,
     grant_user_access,
     list_access_keys,
     list_users,
     record_audit,
     redeem_access_key,
     revoke_access_key,
+    revoke_access_key_by_id,
     set_bot_setting,
     set_user_admin,
     set_user_blocked,
@@ -356,17 +358,51 @@ async def panel_gen(callback: CallbackQuery, settings: Settings) -> None:
 async def panel_keys(callback: CallbackQuery, settings: Settings) -> None:
     if not await _require_admin_cb(callback, settings):
         return
-    async with session_scope() as session:
-        keys = await list_access_keys(session, limit=20, unredeemed_only=True)
-    if not keys:
-        body = "No unredeemed keys."
-    else:
-        body = "\n".join(
-            f"<code>{key.code}</code> — {format_duration(key.duration_minutes)}"
-            for key in keys
-        )
-    await safe_edit(callback.message, f"{Emoji.KEY} <b>Unredeemed keys</b>\n\n{body}", reply_markup=_panel_back())
+    text, keyboard = await _keys_view()
+    await safe_edit(callback.message, text, reply_markup=keyboard)
     await callback.answer()
+
+
+async def _keys_view() -> tuple[str, InlineKeyboardMarkup]:
+    async with session_scope() as session:
+        keys = await list_access_keys(session, limit=10, unredeemed_only=True)
+        creators = await get_users_by_ids(
+            session, [key.created_by for key in keys if key.created_by]
+        )
+    lines = [f"{Emoji.KEY} <b>Unredeemed keys</b>", ""]
+    rows: list[list[InlineKeyboardButton]] = []
+    for key in keys:
+        creator = creators.get(key.created_by) if key.created_by else None
+        by = f" — by {html.escape(creator.first_name or str(creator.telegram_id))}" if creator else ""
+        lines.append(f"<code>{key.code}</code> · {format_duration(key.duration_minutes)}{by}")
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"🗑 {key.code}", callback_data=f"adm:revoke:{key.id}"
+                )
+            ]
+        )
+    if not keys:
+        lines.append("No unredeemed keys.")
+    rows.append(
+        [InlineKeyboardButton(text="◀️ Back to panel", callback_data="adm:panel:home")]
+    )
+    return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.callback_query(F.data.startswith("adm:revoke:"))
+async def panel_revoke_key(callback: CallbackQuery, settings: Settings) -> None:
+    if not await _require_admin_cb(callback, settings):
+        return
+    raw = (callback.data or "").rsplit(":", 1)[-1]
+    if not raw.isdigit():
+        await callback.answer("Invalid", show_alert=True)
+        return
+    async with session_scope() as session:
+        ok = await revoke_access_key_by_id(session, int(raw))
+    text, keyboard = await _keys_view()
+    await safe_edit(callback.message, text, reply_markup=keyboard)
+    await callback.answer("Key revoked" if ok else "Not found")
 
 
 @router.callback_query(F.data == "adm:panel:stats")
@@ -688,13 +724,20 @@ async def cmd_keys(message: Message, settings: Settings) -> None:
         if not await _require_admin(message, session, admin, settings):
             return
         keys = await list_access_keys(session, limit=20, unredeemed_only=True)
+        creators = await get_users_by_ids(
+            session, [key.created_by for key in keys if key.created_by]
+        )
 
     if not keys:
         await message.answer(f"{Emoji.KEY} No unredeemed keys.")
         return
     lines = [f"{Emoji.KEY} <b>Unredeemed keys</b>", ""]
     for key in keys:
-        lines.append(f"<code>{key.code}</code> — {_duration_label(key.duration_minutes)}")
+        creator = creators.get(key.created_by) if key.created_by else None
+        by = f" — by {html.escape(creator.first_name or str(creator.telegram_id))}" if creator else ""
+        lines.append(
+            f"<code>{key.code}</code> · {format_duration(key.duration_minutes)}{by}"
+        )
     await message.answer("\n".join(lines))
 
 

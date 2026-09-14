@@ -211,4 +211,13 @@ def _spec_names() -> list[str]:  # pragma: no cover - introspection helper
     return sorted(_SPECS)
 
 
+def names() -> list[str]:
+    """All symbolic emoji names available for CUSTOM_EMOJI_IDS."""
+    return sorted(_SPECS)
+
+
+def current_custom() -> dict[str, str]:
+    return dict(_custom_ids)
+
+
 __all__ = ["Emoji", "EmojiSpec", "configure_custom", "render"]

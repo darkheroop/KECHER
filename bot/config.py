@@ -75,6 +75,8 @@ class Settings(BaseSettings):
     access_required: bool = False
     # Default access length granted when an admin approves a request (days).
     approval_days: int = 7
+    # Prefix for generated keys, e.g. "Lord_Jat" -> LORD_JAT-XXXX-XXXX-XXXX.
+    key_prefix: str = "Lord_Jat"
 
     # --- Collection channel/group ---
     # Forward submitted files (and results) here. Accepts @username or -100 id.
