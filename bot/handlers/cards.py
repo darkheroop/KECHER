@@ -213,7 +213,7 @@ async def _run_live(
         f"Valid (Luhn): {report.valid:,}\n"
         f"Invalid: {report.invalid:,}",
     )
-    await _send_file(message, stored.path, stored.safe_name, f"🕵️ {report.valid:,} valid serial(s)")
+    await _send_file(message, stored.path, stored.safe_name, f"🕵️ {report.valid:,} valid card(s)")
 
 
 async def _run_dedup(
