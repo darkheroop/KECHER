@@ -86,6 +86,15 @@ _SPECS: dict[str, EmojiSpec] = {
     "COPY": EmojiSpec("📋"),
     "BACK": EmojiSpec("◀️"),
     "NEXT": EmojiSpec("▶️"),
+    # --- card bot ---
+    "FIND": EmojiSpec("🔍"),
+    "LIVE_CHECK": EmojiSpec("🕵️"),
+    "RECYCLE": EmojiSpec("♻️"),
+    "STAR": EmojiSpec("⭐"),
+    "PAGE": EmojiSpec("📄"),
+    "BUTTON_MODE": EmojiSpec("🕵️"),
+    "TEXT_MODE": EmojiSpec("📄"),
+    "CARD": EmojiSpec("💠"),
 }
 
 _custom_ids: dict[str, str] = {}
@@ -188,6 +197,14 @@ class Emoji:
     COPY = _Token("COPY")
     BACK = _Token("BACK")
     NEXT = _Token("NEXT")
+    FIND = _Token("FIND")
+    LIVE_CHECK = _Token("LIVE_CHECK")
+    RECYCLE = _Token("RECYCLE")
+    STAR = _Token("STAR")
+    PAGE = _Token("PAGE")
+    BUTTON_MODE = _Token("BUTTON_MODE")
+    TEXT_MODE = _Token("TEXT_MODE")
+    CARD = _Token("CARD")
 
 
 def _spec_names() -> list[str]:  # pragma: no cover - introspection helper

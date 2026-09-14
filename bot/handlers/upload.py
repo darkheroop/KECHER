@@ -30,7 +30,7 @@ from bot.handlers.states import Flow
 from bot.jobs.manager import JobManager
 from bot.security.limits import human_size
 from bot.services.csv_tool import inspect_csv, parse_column_selection
-from bot.services.filetypes import ext_of, is_csv, is_doc
+from bot.services.filetypes import ext_of, is_csv, is_doc, is_export
 from bot.services.ingest import IngestError, ingest_document
 from bot.services.file_manager import FileManager
 from bot.ui.emoji import Emoji
@@ -152,6 +152,28 @@ async def dispatch_action(
         await data_tools.start_group(reply, record, tg_user, state, file_manager, "bank")
     elif action == "live":
         await validators.start_validation(reply, record, tg_user, state)
+    elif action == "extract":
+        if not is_export(record.safe_name):
+            await reply.answer(f"{Emoji.ERROR} Not a Telegram HTML/JSON export.")
+            return
+        await start_job(
+            reply,
+            job_manager,
+            tg_user=tg_user,
+            kind=JobKind.EXTRACT,
+            input_file_id=record.id,
+            label="Extracting messages",
+        )
+    elif action == "luhn":
+        await start_job(
+            reply,
+            job_manager,
+            tg_user=tg_user,
+            kind=JobKind.CLEAN,
+            input_file_id=record.id,
+            params={"options": {"luhn": True, "remove_empty": True, "trim": True}},
+            label="Luhn filtering",
+        )
     else:
         await reply.answer(f"{Emoji.ERROR} Unknown action.")
 
@@ -188,6 +210,7 @@ async def on_document(
             reply_markup=upload_actions(
                 is_doc=is_doc(record.safe_name),
                 is_csv=is_csv(record.safe_name),
+                is_export=is_export(record.safe_name),
                 file_id=record.id,
             ),
         )

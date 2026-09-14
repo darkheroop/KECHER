@@ -26,6 +26,7 @@ from bot.db.repositories import (
     record_audit,
     revoke_access_key,
     set_user_admin,
+    set_user_blocked,
 )
 from bot.handlers.common import ensure_user
 from bot.security.access import (
@@ -413,6 +414,38 @@ async def cmd_rmadmin(message: Message, settings: Settings) -> None:
     )
 
 
+@router.message(Command("block"))
+async def cmd_block(message: Message, settings: Settings) -> None:
+    await _set_blocked(message, settings, True)
+
+
+@router.message(Command("unblock"))
+async def cmd_unblock(message: Message, settings: Settings) -> None:
+    await _set_blocked(message, settings, False)
+
+
+async def _set_blocked(message: Message, settings: Settings, blocked: bool) -> None:
+    tg_user = message.from_user
+    assert tg_user is not None
+    target_id = _target_id(message)
+    if target_id is None:
+        action = "block" if blocked else "unblock"
+        await message.answer(f"Usage: <code>/{action} &lt;user_id&gt;</code>")
+        return
+    async with session_scope() as session:
+        admin = await ensure_user(session, tg_user)
+        if not await _require_admin(message, session, admin, settings):
+            return
+        target = await set_user_blocked(session, target_id, blocked)
+    if target is None:
+        await message.answer(f"{Emoji.ERROR} User not found.")
+        return
+    if blocked:
+        await message.answer(f"{Emoji.DENIED} <code>{target_id}</code> is now <b>blocked</b>.")
+    else:
+        await message.answer(f"{Emoji.SUCCESS} <code>{target_id}</code> is now <b>unblocked</b>.")
+
+
 @router.message(Command("stats"))
 async def cmd_stats(message: Message, settings: Settings) -> None:
     tg_user = message.from_user
@@ -426,7 +459,6 @@ async def cmd_stats(message: Message, settings: Settings) -> None:
         admins = await count_admins(session)
         keys = await count_rows(session, AccessKey)
         files = await count_rows(session, UserFile)
-        jobs = await count_rows(session, Job)
 
     await message.answer(
         f"{Emoji.STATS} <b>Statistics</b>\n\n"
@@ -434,6 +466,5 @@ async def cmd_stats(message: Message, settings: Settings) -> None:
         f"{Emoji.CHECK} Active access: {active:,}\n"
         f"{Emoji.ADMIN} Admins: {admins:,}\n"
         f"{Emoji.KEY} Keys: {keys:,}\n"
-        f"{Emoji.FILE} Files: {files:,}\n"
-        f"{Emoji.JOBS} Jobs: {jobs:,}"
+        f"{Emoji.FILE} Files: {files:,}"
     )

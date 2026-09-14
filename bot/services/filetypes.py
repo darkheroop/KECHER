@@ -11,9 +11,11 @@ from pathlib import Path
 DOC_EXTS = {".doc", ".docx"}
 CSV_EXTS = {".csv", ".tsv"}
 TEXT_EXTS = {".txt", ".text", ".log", ".dat", ".list", ".lst", ".csv", ".tsv"}
+# Telegram Desktop chat exports (imported offline via /extract).
+EXPORT_EXTS = {".html", ".htm", ".json"}
 
 # Everything the bot may ingest at all.
-ALLOWED_EXTS = DOC_EXTS | TEXT_EXTS
+ALLOWED_EXTS = DOC_EXTS | TEXT_EXTS | EXPORT_EXTS
 
 
 def ext_of(name: str) -> str:
@@ -30,6 +32,10 @@ def is_csv(name: str) -> bool:
 
 def is_text(name: str) -> bool:
     return ext_of(name) in TEXT_EXTS
+
+
+def is_export(name: str) -> bool:
+    return ext_of(name) in EXPORT_EXTS
 
 
 def is_ingestible(name: str) -> bool:

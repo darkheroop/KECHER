@@ -32,6 +32,7 @@ from bot.services.dataset import (
 )
 from bot.services.doc_convert import convert_document
 from bot.services.scraper import ScrapeOptions
+from bot.services.telegram_export import extract_to_txt
 from bot.services.validation import ValidationOptions, validate_file
 from bot.ui.emoji import Emoji
 from bot.services.filetypes import as_txt_name
@@ -494,6 +495,42 @@ async def _handle_scrape(ctx: JobContext, scraper) -> JobResult:  # noqa: ANN001
 
 
 # --------------------------------------------------------------------------- #
+# Telegram export import
+# --------------------------------------------------------------------------- #
+async def _handle_extract(ctx: JobContext, settings: Settings) -> JobResult:
+    ctx.raise_if_cancelled()
+    source = _require_input(ctx)
+    target = _out(ctx, as_txt_name(source.name))
+
+    count = await run_with_progress(
+        extract_to_txt,
+        source,
+        target.path,
+        reporter=ctx.progress,
+        total=max(1, _size(source)),
+        label="Extracting messages",
+    )
+    ctx.raise_if_cancelled()
+
+    if count == 0:
+        target.path.unlink(missing_ok=True)
+        return JobResult(message="No messages found in that export.", outputs=[])
+
+    stored = ctx.files.finalize(target)
+    return JobResult(
+        message=(
+            "<b>Extraction complete</b>\n\n"
+            f"Messages: {count:,}\n"
+            f"Output: {stored.safe_name}\n\n"
+            "Next: send this TXT to /clean and enable "
+            "<b>Luhn check all (offline)</b>."
+        ),
+        outputs=[JobOutput(stored, caption=f"{count:,} message(s) extracted")],
+        stats={"messages": count},
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Offline test-data validation
 # --------------------------------------------------------------------------- #
 def _resolve_field_indices(info, params: dict) -> tuple[int | None, int | None]:
@@ -625,7 +662,11 @@ def register_handlers(manager: JobManager, settings: Settings, scraper=None) -> 
     async def validate(ctx: JobContext) -> JobResult:
         return await _handle_validate(ctx, settings)
 
+    async def extract(ctx: JobContext) -> JobResult:
+        return await _handle_extract(ctx, settings)
+
     manager.register(JobKind.DOC2TXT, doc2txt)
+    manager.register(JobKind.EXTRACT, extract)
     manager.register(JobKind.CSV, csv)
     manager.register(JobKind.SPLIT, split)
     manager.register(JobKind.CLEAN, clean)

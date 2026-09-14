@@ -243,6 +243,18 @@ async def test_pick_job_unknown_value(db) -> None:
     assert sender.documents == []
 
 
+async def test_extract_job(db) -> None:
+    fm, manager, sender = _setup(db)
+    user_id = await _user()
+    html = b'<div class="text">4111 1111 1111 1111<br>ok</div>'
+    file_id = await _input(fm, 1, user_id, "messages.html", html)
+
+    status, error = await _run(fm, manager, user_id, "extract", file_id=file_id)
+    assert status == "completed", error
+    output = sender.documents[0][1]
+    assert "4111 1111 1111 1111" in output.read_text(encoding="utf-8")
+
+
 async def test_validate_job(db) -> None:
     fm, manager, sender = _setup(db)
     user_id = await _user()

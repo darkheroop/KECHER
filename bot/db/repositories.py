@@ -553,3 +553,23 @@ async def count_admins(session: AsyncSession) -> int:
         )
         or 0
     )
+
+
+async def set_user_blocked(
+    session: AsyncSession, telegram_id: int, blocked: bool
+) -> User | None:
+    user = await get_user_by_telegram_id(session, telegram_id)
+    if user is None:
+        return None
+    user.is_blocked = blocked
+    await session.flush()
+    return user
+
+
+async def list_users(
+    session: AsyncSession, *, limit: int = 20, offset: int = 0
+) -> list[User]:
+    result = await session.scalars(
+        select(User).order_by(User.id.desc()).limit(limit).offset(offset)
+    )
+    return list(result)

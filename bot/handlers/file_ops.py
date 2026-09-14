@@ -35,6 +35,8 @@ _PROMPTS = {
     "country": "Send the dataset file to group by country.",
     "bank": "Send the dataset file to group by bank.",
     "live": "Send the test dataset to validate (e.g. <code>pan|expiry</code> or CSV).",
+    "luhn": "Send a dataset; only lines with a Luhn-valid number are kept (offline).",
+    "extract": "Send a Telegram export (<code>messages.html</code> or <code>result.json</code>).",
 }
 
 
@@ -72,6 +74,16 @@ async def cmd_dedup(message: Message, state: FSMContext) -> None:
 @router.message(Command("addfile"))
 async def cmd_addfile(message: Message, state: FSMContext) -> None:
     await prompt_for_file(message, state, "addfile")
+
+
+@router.message(Command("luhn"))
+async def cmd_luhn(message: Message, state: FSMContext) -> None:
+    await prompt_for_file(message, state, "luhn")
+
+
+@router.message(Command("extract"))
+async def cmd_extract(message: Message, state: FSMContext) -> None:
+    await prompt_for_file(message, state, "extract")
 
 
 @router.message(Command("merge"))

@@ -20,7 +20,8 @@ from bot.ui.render import safe_edit
 router = Router(name="start_help")
 
 _FILE_PROMPT_ACTIONS = {
-    "doc2txt", "csv", "split", "clean", "dedup", "addfile", "find", "country", "bank", "live",
+    "doc2txt", "csv", "split", "clean", "dedup", "addfile", "find", "country", "bank",
+    "live", "luhn", "extract",
 }
 
 HELP_TEXT = (

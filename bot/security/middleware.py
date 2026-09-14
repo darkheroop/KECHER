@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 SLOW_DOWN_TEXT = f"{Emoji.WARNING} Too many requests. Please slow down."
 
 # Commands always allowed, even without an active key (needed to gain access).
-PUBLIC_COMMANDS = {"start", "help", "redeem", "mykey", "plogin", "id", "claimadmin"}
+PUBLIC_COMMANDS = {"start", "menu", "help", "redeem", "mykey", "id", "claimadmin"}
 
 NO_ACCESS_TEXT = (
     f"{Emoji.LOCK} <b>Access required</b>\n\n"
@@ -79,15 +79,8 @@ class AccessMiddleware(BaseMiddleware):
         event: TelegramObject,
         data: dict[str, Any],
     ) -> Any:
-        if not self._settings.access_required:
-            return await handler(event, data)
-
         user = data.get("event_from_user") or getattr(event, "from_user", None)
         if user is None or getattr(user, "is_bot", False):
-            return await handler(event, data)
-
-        command = _command_of(event)
-        if command in PUBLIC_COMMANDS:
             return await handler(event, data)
 
         async with session_scope() as session:
@@ -97,18 +90,33 @@ class AccessMiddleware(BaseMiddleware):
                 username=getattr(user, "username", None),
                 first_name=getattr(user, "first_name", None),
             )
-            allowed = is_admin(db_user, self._settings) or has_active_access(db_user)
+            blocked = db_user.is_blocked
+            admin = is_admin(db_user, self._settings)
+            active = has_active_access(db_user)
 
-        if allowed:
+        # Blocked users get nothing, regardless of access mode.
+        if blocked:
+            await self._notify(event, f"{Emoji.DENIED} You are blocked.")
+            return None
+
+        if not self._settings.access_required:
             return await handler(event, data)
 
-        if isinstance(event, CallbackQuery):
-            await event.answer(
-                "Access required. Redeem a key with /redeem.", show_alert=True
-            )
-        elif isinstance(event, Message):
-            await event.answer(NO_ACCESS_TEXT)
+        if _command_of(event) in PUBLIC_COMMANDS:
+            return await handler(event, data)
+
+        if admin or active:
+            return await handler(event, data)
+
+        await self._notify(event, NO_ACCESS_TEXT)
         return None
+
+    @staticmethod
+    async def _notify(event: TelegramObject, text: str) -> None:
+        if isinstance(event, CallbackQuery):
+            await event.answer("Blocked / access required.", show_alert=True)
+        elif isinstance(event, Message):
+            await event.answer(text)
 
 
 class RateLimitMiddleware(BaseMiddleware):

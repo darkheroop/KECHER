@@ -21,6 +21,7 @@ class Language(StrEnum):
 
 class JobKind(StrEnum):
     DOC2TXT = "doc2txt"
+    EXTRACT = "extract"
     CSV = "csv"
     SPLIT = "split"
     CLEAN = "clean"
