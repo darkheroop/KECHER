@@ -168,6 +168,23 @@ def test_tag_suffix(monkeypatch) -> None:
     assert cards._tag("noext") == "noext@Lord_Jat"
 
 
+def test_filter_by_series_prefix(tmp_path: Path) -> None:
+    src = tmp_path / "in.txt"
+    src.write_text(
+        "1234567891234567|02|2028|555\n"
+        "9876543219876543|02|28|555\n"
+        "1234561111222233|02|2028|555\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "series.txt"
+    report = filter_cards(src, out, "123456", mode="prefix")
+    assert report.lines == 2
+    text = out.read_text(encoding="utf-8")
+    assert "1234567891234567|02|2028|555" in text
+    assert "1234561111222233|02|2028|555" in text
+    assert "9876543219876543" not in text
+
+
 def test_merge_files(tmp_path: Path) -> None:
     a = tmp_path / "a.txt"
     b = tmp_path / "b.txt"

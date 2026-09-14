@@ -19,7 +19,7 @@ COMMANDS: list[BotCommand] = [
     BotCommand(command="help", description="How to use the bot"),
     BotCommand(command="clean", description="Extract valid card records"),
     BotCommand(command="live", description="Keep records that pass the Luhn check"),
-    BotCommand(command="filter", description="Keep card lines above a keyword"),
+    BotCommand(command="filter", description="Filter by series prefix or keyword"),
     BotCommand(command="split", description="Split a file into N parts"),
     BotCommand(command="dedup", description="Remove duplicate lines"),
     BotCommand(command="addfile", description="Add a file to the merge queue"),

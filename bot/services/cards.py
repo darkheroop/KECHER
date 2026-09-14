@@ -196,25 +196,48 @@ def live_cards(
 # /filter <keyword>  -- card lines directly above a keyword line
 # --------------------------------------------------------------------------- #
 def filter_cards(
-    src: str | Path, out: str | Path, keyword: str, *, on_progress: ProgressFn | None = None
+    src: str | Path,
+    out: str | Path,
+    value: str,
+    *,
+    mode: str = "keyword",
+    on_progress: ProgressFn | None = None,
 ) -> FilterReport:
-    report = FilterReport(keyword=keyword)
-    needle = (keyword or "").strip().casefold()
+    """Filter records by ``mode``.
+
+    ``keyword``: return the card lines directly above a line containing the
+    keyword. ``prefix``: return every card line whose serial starts with the
+    given series (e.g. ``123456`` extracts all serials starting 123456).
+    """
+    report = FilterReport(keyword=value)
+    needle = (value or "").strip()
     lines = list(iter_lines(src))
     collected: list[str] = []
 
-    for index, line in enumerate(lines):
-        if needle and needle in line.casefold():
-            report.matches += 1
-            # Walk upward collecting the consecutive card lines.
-            block: list[str] = []
-            cursor = index - 1
-            while cursor >= 0 and is_card_line(lines[cursor]):
-                block.append(lines[cursor])
-                cursor -= 1
-            collected.extend(reversed(block))
-        if on_progress:
-            on_progress(index + 1)
+    if mode == "prefix":
+        for index, line in enumerate(lines, start=1):
+            serials = [card.serial for card in extract_cards(line)]
+            bare = SERIAL_RE.match(line)
+            if bare:
+                serials.append(bare.group(1))
+            if needle and any(serial.startswith(needle) for serial in serials):
+                collected.append(line.rstrip())
+                report.matches += 1
+            if on_progress:
+                on_progress(index)
+    else:
+        lowered = needle.casefold()
+        for index, line in enumerate(lines):
+            if lowered and lowered in line.casefold():
+                report.matches += 1
+                block: list[str] = []
+                cursor = index - 1
+                while cursor >= 0 and is_card_line(lines[cursor]):
+                    block.append(lines[cursor])
+                    cursor -= 1
+                collected.extend(reversed(block))
+            if on_progress:
+                on_progress(index + 1)
 
     handle = _open_write(Path(out))
     try:

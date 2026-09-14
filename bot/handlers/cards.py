@@ -64,7 +64,7 @@ HELP_BY_COMMAND = {
 REPLY_PROMPT = {
     "clean": "🧹 Reply to a .txt file with /clean to extract valid records.",
     "live": "🕵️ Reply to a .txt file with /live to keep Luhn-valid records.",
-    "filter": "🎯 Reply to a .txt file with /filter &lt;keyword&gt; to extract the lines above that keyword.",
+    "filter": "🎯 Reply to a .txt with /filter 123456 (series) or /filter canada (keyword).",
     "split": "✂️ Reply to a .txt file with /split N to split it into N equal parts.",
     "dedup": "♻️ Reply to a .txt file with /dedup to remove duplicate lines.",
     "addfile": "📄 Reply to a .txt file with /addfile to add it to the merge queue.",
@@ -292,12 +292,28 @@ async def cmd_filter(message: Message, file_manager: FileManager, settings: Sett
     if len(parts) < 2 or not parts[1].strip():
         await message.answer(
             f"{Emoji.FIND} <b>Filter</b>\n\n"
-            "Define a custom keyword:\n"
-            "<code>/filter &lt;keyword&gt;</code>\n\n"
-            "I will return every card line that sits directly above that keyword."
+            "• By <b>series</b> (serial prefix): <code>/filter 123456</code>\n"
+            "• By <b>keyword</b> (card lines above it): <code>/filter canada</code>\n\n"
+            "You can also force it: <code>/filter num 123456</code> or "
+            "<code>/filter name canada</code>."
         )
         return
-    keyword = parts[1].strip()
+
+    argument = parts[1].strip()
+    mode = "prefix" if argument.isdigit() else "keyword"
+    first, _, rest = argument.partition(" ")
+    if first.lower() in {"num", "serial", "prefix", "bin"}:
+        mode, argument = "prefix", rest.strip()
+    elif first.lower() in {"name", "keyword", "text"}:
+        mode, argument = "keyword", rest.strip()
+
+    if not argument:
+        await message.answer(
+            f"{Emoji.ERROR} Give a series (e.g. <code>/filter 123456</code>) "
+            "or a keyword (e.g. <code>/filter canada</code>)."
+        )
+        return
+
     record = await _ingest_reply(message, file_manager, settings)
     if record is None:
         await _prompt_reply(message, "filter")
@@ -305,12 +321,13 @@ async def cmd_filter(message: Message, file_manager: FileManager, settings: Sett
 
     telegram_id = message.from_user.id
     src = _resolve(record, file_manager, telegram_id)
-    safe = "".join(ch if ch.isalnum() else "_" for ch in keyword)[:40] or "keyword"
+    safe = "".join(ch if ch.isalnum() else "_" for ch in argument)[:40] or "filter"
     out = file_manager.allocate(
         telegram_id, f"{Path(record.safe_name).stem}_{safe}.txt", subdir="out"
     )
-    status = await message.answer(f"{Emoji.FIND} Filtering “{html.escape(keyword)}”…")
-    report = await asyncio.to_thread(filter_cards, src, out.path, keyword)
+    label = "series" if mode == "prefix" else "keyword"
+    status = await message.answer(f"{Emoji.FIND} Filtering by {label} “{html.escape(argument)}”…")
+    report = await asyncio.to_thread(filter_cards, src, out.path, argument, mode=mode)
     stored = file_manager.finalize(out)
     async with session_scope() as session:
         user_settings = await get_user_settings(session, record.user_id)
@@ -318,12 +335,12 @@ async def cmd_filter(message: Message, file_manager: FileManager, settings: Sett
     await safe_edit(
         status,
         f"{Emoji.SUCCESS} <b>Filter complete</b>\n\n"
-        f"Keyword: <b>{html.escape(keyword)}</b>\n"
+        f"{label.title()}: <b>{html.escape(argument)}</b>\n"
         f"Matches: {report.matches:,}\n"
         f"Card lines: {report.lines:,}",
     )
     await _send_file(
-        message, stored.path, stored.safe_name, f"🎯 {report.lines:,} line(s) above “{keyword}”"
+        message, stored.path, stored.safe_name, f"🎯 {report.lines:,} line(s) for “{argument}”"
     )
 
 
@@ -553,9 +570,9 @@ async def on_card_action(
         await _run_addfile(callback.message, record)
     elif action == "filter":
         await callback.message.answer(
-            f"{Emoji.FIND} Send the keyword like this:\n"
-            f"<code>/filter &lt;keyword&gt;</code>\n\n"
-            "(reply to the file message with that command)"
+            f"{Emoji.FIND} <b>Filter</b> — reply to the file with:\n"
+            "• <code>/filter 123456</code> (series prefix)\n"
+            "• <code>/filter canada</code> (keyword above)"
         )
     elif action == "split":
         await callback.message.answer(

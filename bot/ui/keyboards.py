@@ -25,6 +25,7 @@ def main_menu() -> InlineKeyboardMarkup:
             [_btn(f"{Emoji.SPLIT} Split", "menu:split"), _btn(f"{Emoji.RECYCLE} Dedup", "menu:dedup")],
             [_btn(f"{Emoji.PAGE} Add File", "menu:addfile"), _btn(f"{Emoji.STAR} Merge", "menu:merge")],
             [_btn(f"{Emoji.FIND} Find BIN", "menu:findbin")],
+            [_btn(f"{Emoji.ADMIN} Admin Panel", "adm:panel:home")],
             [_btn(f"{Emoji.SETTINGS} Settings", "settings:open")],
         ]
     )
