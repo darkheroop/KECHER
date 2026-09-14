@@ -260,6 +260,28 @@ async def panel_home(callback: CallbackQuery, settings: Settings) -> None:
     await callback.answer()
 
 
+@router.callback_query(F.data == "adm:panel:ftest")
+async def panel_forward_test(callback: CallbackQuery, settings: Settings) -> None:
+    if not await _require_admin_cb(callback, settings):
+        return
+    channel = (settings.forward_channel_id or "").strip()
+    if not channel:
+        await callback.answer(
+            "Set FORWARD_CHANNEL_ID first (Railway → Variables).", show_alert=True
+        )
+        return
+    try:
+        await callback.bot.send_message(
+            channel,
+            "✅ <b>Forward test</b>\n\nCard File Bot can post to this channel.",
+        )
+        await callback.answer("Test sent ✅ Check your channel.", show_alert=True)
+    except Exception as exc:  # noqa: BLE001 - show the real reason to the admin
+        await callback.answer(
+            f"Failed: {type(exc).__name__}. Is the bot an admin here?", show_alert=True
+        )
+
+
 @router.callback_query(F.data == "adm:panel:forward")
 async def panel_forward(callback: CallbackQuery, settings: Settings) -> None:
     if not await _require_admin_cb(callback, settings):
@@ -340,25 +362,121 @@ async def panel_stats(callback: CallbackQuery, settings: Settings) -> None:
     await callback.answer()
 
 
-@router.callback_query(F.data == "adm:panel:users")
-async def panel_users(callback: CallbackQuery, settings: Settings) -> None:
-    if not await _require_admin_cb(callback, settings):
-        return
+USERS_PER_PAGE = 8
+
+
+async def _users_view(page: int) -> tuple[str, InlineKeyboardMarkup]:
     async with session_scope() as session:
-        users = await list_users(session, limit=25)
-    lines = [f"{Emoji.USER} <b>Recent users</b>", ""]
+        total = await count_rows(session, User)
+        users = await list_users(
+            session, limit=USERS_PER_PAGE, offset=page * USERS_PER_PAGE
+        )
+    pages = max(1, (total + USERS_PER_PAGE - 1) // USERS_PER_PAGE)
+    page = max(0, min(page, pages - 1))
+
+    lines = [f"{Emoji.USER} <b>Users</b> — page {page + 1}/{pages}", ""]
+    rows: list[list[InlineKeyboardButton]] = []
     for user in users:
         flags = []
         if user.is_admin:
             flags.append("👑")
         if user.is_blocked:
             flags.append("⛔")
-        name = html.escape(user.first_name or "")
+        name = html.escape((user.first_name or "")[:22])
         lines.append(f"<code>{user.telegram_id}</code> {name} {' '.join(flags)}".rstrip())
-    lines.append("")
-    lines.append("Use /block, /unblock, /addadmin, /rmadmin, /grant &lt;id&gt;.")
-    await safe_edit(callback.message, "\n".join(lines), reply_markup=_panel_back())
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="✅ Unban" if user.is_blocked else "⛔ Ban",
+                    callback_data=f"adm:uban:{user.telegram_id}:{page}",
+                ),
+                InlineKeyboardButton(
+                    text="🚫 Demote" if user.is_admin else "👑 Promote",
+                    callback_data=f"adm:uadm:{user.telegram_id}:{page}",
+                ),
+            ]
+        )
+
+    nav: list[InlineKeyboardButton] = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="◀️", callback_data=f"adm:panel:users:{page - 1}"))
+    nav.append(InlineKeyboardButton(text=f"{page + 1}/{pages}", callback_data="noop"))
+    if page < pages - 1:
+        nav.append(InlineKeyboardButton(text="▶️", callback_data=f"adm:panel:users:{page + 1}"))
+    rows.append(nav)
+    rows.append(
+        [InlineKeyboardButton(text="◀️ Back to panel", callback_data="adm:panel:home")]
+    )
+    return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.callback_query(F.data == "noop")
+async def noop(callback: CallbackQuery) -> None:
     await callback.answer()
+
+
+@router.callback_query(F.data == "adm:panel:users")
+async def panel_users(callback: CallbackQuery, settings: Settings) -> None:
+    if not await _require_admin_cb(callback, settings):
+        return
+    text, keyboard = await _users_view(0)
+    await safe_edit(callback.message, text, reply_markup=keyboard)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("adm:panel:users:"))
+async def panel_users_page(callback: CallbackQuery, settings: Settings) -> None:
+    if not await _require_admin_cb(callback, settings):
+        return
+    raw = (callback.data or "").rsplit(":", 1)[-1]
+    page = int(raw) if raw.isdigit() else 0
+    text, keyboard = await _users_view(page)
+    await safe_edit(callback.message, text, reply_markup=keyboard)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("adm:uban:"))
+async def panel_user_ban(callback: CallbackQuery, settings: Settings) -> None:
+    if not await _require_admin_cb(callback, settings):
+        return
+    parts = (callback.data or "").split(":")
+    target_id = int(parts[2])
+    page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
+    if target_id == callback.from_user.id:
+        await callback.answer("You can't ban yourself.", show_alert=True)
+        return
+    async with session_scope() as session:
+        target = await get_user_by_telegram_id(session, target_id)
+        if target is None:
+            await callback.answer("User not found", show_alert=True)
+            return
+        new_state = not target.is_blocked
+        await set_user_blocked(session, target_id, new_state)
+    text, keyboard = await _users_view(page)
+    await safe_edit(callback.message, text, reply_markup=keyboard)
+    await callback.answer("Banned" if new_state else "Unbanned")
+
+
+@router.callback_query(F.data.startswith("adm:uadm:"))
+async def panel_user_admin(callback: CallbackQuery, settings: Settings) -> None:
+    if not await _require_admin_cb(callback, settings):
+        return
+    parts = (callback.data or "").split(":")
+    target_id = int(parts[2])
+    page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
+    if target_id == callback.from_user.id:
+        await callback.answer("You can't change your own admin status.", show_alert=True)
+        return
+    async with session_scope() as session:
+        target = await get_user_by_telegram_id(session, target_id)
+        if target is None:
+            await callback.answer("User not found", show_alert=True)
+            return
+        new_state = not target.is_admin
+        await set_user_admin(session, target_id, new_state)
+    text, keyboard = await _users_view(page)
+    await safe_edit(callback.message, text, reply_markup=keyboard)
+    await callback.answer("Promoted" if new_state else "Demoted")
 
 
 @router.callback_query(F.data.regexp(r"^adm:(approve|block):-?\d+$"))

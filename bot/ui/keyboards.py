@@ -78,6 +78,7 @@ def admin_panel(forward_on: bool, access_on: bool) -> InlineKeyboardMarkup:
                 _btn(_mark("📡 Forward", forward_on), "adm:panel:forward"),
                 _btn(_mark("🔐 Access", access_on), "adm:panel:access"),
             ],
+            [_btn("🧪 Forward test", "adm:panel:ftest")],
             [
                 _btn("🔑 Gen 5 × 1d", "adm:panel:gen:5:1"),
                 _btn("🔑 Gen 10 × 7d", "adm:panel:gen:10:7"),
