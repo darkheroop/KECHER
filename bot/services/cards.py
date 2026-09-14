@@ -1,7 +1,7 @@
-"""Wedding-card serial file operations.
+"""Card serial file operations.
 
-Card line format (your custom format -- do not change):
-    <16-digit serial>|<2-digit date>|<2 or 4 digit time>|<3 or 4 digit invited>
+Record format (well-known custom format):
+    <16-digit serial>|<2-digit date>|<2 or 4 digit time>|<3 or 4 digit count>
 
 Examples:
     1234567891234567|02|2028|555
@@ -62,7 +62,7 @@ class LiveReport:
 
 
 @dataclass(slots=True)
-class CountryReport:
+class FilterReport:
     keyword: str = ""
     matches: int = 0
     lines: int = 0
@@ -193,12 +193,12 @@ def live_cards(
 
 
 # --------------------------------------------------------------------------- #
-# /country <keyword>  -- card lines directly above a keyword line
+# /filter <keyword>  -- card lines directly above a keyword line
 # --------------------------------------------------------------------------- #
-def country_cards(
+def filter_cards(
     src: str | Path, out: str | Path, keyword: str, *, on_progress: ProgressFn | None = None
-) -> CountryReport:
-    report = CountryReport(keyword=keyword)
+) -> FilterReport:
+    report = FilterReport(keyword=keyword)
     needle = (keyword or "").strip().casefold()
     lines = list(iter_lines(src))
     collected: list[str] = []

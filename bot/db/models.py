@@ -178,6 +178,15 @@ class AuditLog(Base):
     )
 
 
+class BotSetting(Base):
+    """Simple key/value store for global bot flags (e.g. forwarding)."""
+
+    __tablename__ = "bot_settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(String(256), default="", nullable=False)
+
+
 class AccessKey(Base):
     """A redeemable access key granting a fixed duration of bot access."""
 

@@ -5,25 +5,27 @@ from __future__ import annotations
 from aiogram import Bot
 from aiogram.types import BotCommand, BotCommandScopeDefault
 
-SHORT_DESCRIPTION = "Manage wedding-card serial files: clean, validate, split, merge."
+SHORT_DESCRIPTION = "Extract, validate, filter and organise card serial files."
 
 DESCRIPTION = (
-    "Card File Bot — organise and validate wedding-card serial files "
-    "(16-digit serial|date|time|invited). Reply to a .txt with a command."
+    "Card File Bot — a professional toolkit for card serial files. "
+    "Reply to a .txt with a command to clean, validate, filter, split, "
+    "deduplicate or merge records."
 )
 
 COMMANDS: list[BotCommand] = [
     BotCommand(command="start", description="Start / main menu"),
     BotCommand(command="menu", description="Open the menu"),
     BotCommand(command="help", description="How to use the bot"),
-    BotCommand(command="clean", description="Keep valid card records"),
-    BotCommand(command="live", description="Keep Luhn-valid serials"),
-    BotCommand(command="country", description="Keep card lines above a keyword"),
+    BotCommand(command="clean", description="Extract valid card records"),
+    BotCommand(command="live", description="Keep records that pass the Luhn check"),
+    BotCommand(command="filter", description="Keep card lines above a keyword"),
     BotCommand(command="split", description="Split a file into N parts"),
     BotCommand(command="dedup", description="Remove duplicate lines"),
     BotCommand(command="addfile", description="Add a file to the merge queue"),
     BotCommand(command="merge", description="Combine the queued files"),
     BotCommand(command="clearqueue", description="Clear the merge queue"),
+    BotCommand(command="forward", description="Admin: toggle forwarding to the channel"),
     BotCommand(command="scrape", description="Import from a source (coming soon)"),
     BotCommand(command="findbin", description="Find BIN info (coming soon)"),
     BotCommand(command="settings", description="Button / text mode"),

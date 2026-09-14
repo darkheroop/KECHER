@@ -18,6 +18,7 @@ from bot.db.models import (
     AccessKey,
     AuditLog,
     AuthorizedSource,
+    BotSetting,
     Job,
     MergeQueue,
     MergeQueueItem,
@@ -558,6 +559,27 @@ async def count_admins(session: AsyncSession) -> int:
 async def list_admins(session: AsyncSession) -> list[User]:
     result = await session.scalars(select(User).where(User.is_admin.is_(True)))
     return list(result)
+
+
+# --------------------------------------------------------------------------- #
+# Global bot settings (key/value)
+# --------------------------------------------------------------------------- #
+async def get_bot_setting(
+    session: AsyncSession, key: str, default: str | None = None
+) -> str | None:
+    setting = await session.get(BotSetting, key)
+    if setting is None:
+        return default
+    return setting.value
+
+
+async def set_bot_setting(session: AsyncSession, key: str, value: str) -> None:
+    setting = await session.get(BotSetting, key)
+    if setting is None:
+        session.add(BotSetting(key=key, value=value))
+    else:
+        setting.value = value
+    await session.flush()
 
 
 async def set_user_blocked(

@@ -27,12 +27,14 @@ from bot.db.repositories import (
     count_admins,
     count_rows,
     create_access_keys,
+    get_bot_setting,
     get_or_create_user,
     get_user_by_telegram_id,
     grant_user_access,
     list_access_keys,
     record_audit,
     revoke_access_key,
+    set_bot_setting,
     set_user_admin,
     set_user_blocked,
 )
@@ -491,6 +493,34 @@ async def cmd_rmadmin(message: Message, settings: Settings) -> None:
         if target
         else f"{Emoji.ERROR} User not found."
     )
+
+
+@router.message(Command("forward"))
+async def cmd_forward(message: Message, settings: Settings) -> None:
+    tg_user = message.from_user
+    assert tg_user is not None
+    parts = (message.text or "").split()
+    async with session_scope() as session:
+        admin = await ensure_user(session, tg_user)
+        if not await _require_admin(message, session, admin, settings):
+            return
+        current = (await get_bot_setting(session, "forward_enabled", "false")) == "true"
+        if len(parts) > 1 and parts[1].lower() in {"on", "off"}:
+            enabled = parts[1].lower() == "on"
+        else:
+            enabled = not current
+        await set_bot_setting(session, "forward_enabled", "true" if enabled else "false")
+
+    channel = (settings.forward_channel_id or "").strip()
+    lines = [f"{Emoji.INFO} <b>Forwarding: {'ON' if enabled else 'OFF'}</b>", ""]
+    if channel:
+        lines.append(f"Channel: <code>{html.escape(channel)}</code>")
+    else:
+        lines.append(
+            f"{Emoji.WARNING} No channel configured. Set "
+            "<code>FORWARD_CHANNEL_ID</code> to your channel id/username."
+        )
+    await message.answer("\n".join(lines))
 
 
 @router.message(Command("block"))

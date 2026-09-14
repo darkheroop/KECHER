@@ -77,6 +77,17 @@ async def test_merge_queue_lifecycle(db) -> None:
         assert await list_queue_items(session, user.id) == []
 
 
+async def test_bot_setting_roundtrip(db) -> None:
+    from bot.db.repositories import get_bot_setting, set_bot_setting
+
+    async with session_scope() as session:
+        assert await get_bot_setting(session, "forward_enabled", "false") == "false"
+        await set_bot_setting(session, "forward_enabled", "true")
+    async with session_scope() as session:
+        assert await get_bot_setting(session, "forward_enabled") == "true"
+        await set_bot_setting(session, "forward_enabled", "false")
+
+
 async def test_active_jobs_filter(db) -> None:
     async with session_scope() as session:
         user, _ = await get_or_create_user(session, 300)

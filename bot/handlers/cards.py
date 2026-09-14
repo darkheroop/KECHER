@@ -1,4 +1,4 @@
-"""Card commands: /clean, /live, /country, /split, /dedup, /addfile, /merge.
+"""Card commands: /clean, /live, /filter, /split, /dedup, /addfile, /merge.
 
 Workflow: reply to a ``.txt`` file with the command. Uploading a ``.txt`` also
 offers the same actions as buttons.
@@ -24,6 +24,7 @@ from bot.db.repositories import (
     clear_queue,
     create_file,
     delete_file_row,
+    get_bot_setting,
     get_user_files_by_ids,
     get_user_settings,
 )
@@ -36,8 +37,8 @@ from bot.handlers.common import (
 )
 from bot.services.cards import (
     clean_cards,
-    country_cards,
     dedup_cards,
+    filter_cards,
     live_cards,
     merge_files,
     split_cards,
@@ -53,21 +54,26 @@ router = Router(name="cards")
 
 HELP_BY_COMMAND = {
     "clean": "🧹 Receive the valid card records only.",
-    "live": "🕵️ Receive only the serial numbers that pass the Luhn check.",
-    "country": "🌐 Receive the card lines that sit directly above your keyword.",
+    "live": "🕵️ Receive only the records that pass the Luhn check.",
+    "filter": "🎯 Receive the card lines that sit directly above your keyword.",
     "split": "✂️ Split the file into N equal parts.",
     "dedup": "♻️ Remove exact duplicate lines.",
     "addfile": "📄 Add the file to the merge queue.",
 }
 
 REPLY_PROMPT = {
-    "clean": "🧹 Reply to a .txt file with /clean to extract valid cards.",
-    "live": "🕵️ Reply to a .txt file with /live to keep Luhn-valid serials.",
-    "country": "🌐 Reply to a .txt file with /country &lt;keyword&gt; to extract the lines above that keyword.",
+    "clean": "🧹 Reply to a .txt file with /clean to extract valid records.",
+    "live": "🕵️ Reply to a .txt file with /live to keep Luhn-valid records.",
+    "filter": "🎯 Reply to a .txt file with /filter &lt;keyword&gt; to extract the lines above that keyword.",
     "split": "✂️ Reply to a .txt file with /split N to split it into N equal parts.",
     "dedup": "♻️ Reply to a .txt file with /dedup to remove duplicate lines.",
     "addfile": "📄 Reply to a .txt file with /addfile to add it to the merge queue.",
 }
+
+
+async def _forwarding_enabled() -> bool:
+    async with session_scope() as session:
+        return (await get_bot_setting(session, "forward_enabled", "false")) == "true"
 
 
 # --------------------------------------------------------------------------- #
@@ -110,7 +116,7 @@ async def _ingest_reply(
         await message.answer(f"{Emoji.ERROR} {exc}")
         return None
 
-    if settings.forward_uploads:
+    if settings.forward_uploads and await _forwarding_enabled():
         await forward_to_channel(message.bot, settings, reply.chat.id, reply.message_id)
     return record
 
@@ -145,7 +151,7 @@ async def _send_file(message: Message, path: Path, filename: str, caption: str) 
         FSInputFile(path, filename=filename), caption=caption
     )
     settings = get_settings()
-    if settings.forward_results:
+    if settings.forward_results and await _forwarding_enabled():
         await forward_to_channel(message.bot, settings, sent.chat.id, sent.message_id)
 
 
@@ -269,23 +275,23 @@ async def _run_addfile(message: Message, record: UserFile) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# /country <keyword>
+# /filter <keyword>
 # --------------------------------------------------------------------------- #
-@router.message(Command("country"))
-async def cmd_country(message: Message, file_manager: FileManager, settings: Settings) -> None:
+@router.message(Command("filter"))
+async def cmd_filter(message: Message, file_manager: FileManager, settings: Settings) -> None:
     parts = (message.text or "").split(maxsplit=1)
     if len(parts) < 2 or not parts[1].strip():
         await message.answer(
-            f"{Emoji.COUNTRY} <b>Country</b>\n\n"
+            f"{Emoji.FIND} <b>Filter</b>\n\n"
             "Define a custom keyword:\n"
-            "<code>/country &lt;keyword&gt;</code>\n\n"
+            "<code>/filter &lt;keyword&gt;</code>\n\n"
             "I will return every card line that sits directly above that keyword."
         )
         return
     keyword = parts[1].strip()
     record = await _ingest_reply(message, file_manager, settings)
     if record is None:
-        await _prompt_reply(message, "country")
+        await _prompt_reply(message, "filter")
         return
 
     telegram_id = message.from_user.id
@@ -294,21 +300,21 @@ async def cmd_country(message: Message, file_manager: FileManager, settings: Set
     out = file_manager.allocate(
         telegram_id, f"{Path(record.safe_name).stem}_{safe}.txt", subdir="out"
     )
-    status = await message.answer(f"{Emoji.COUNTRY} Filtering “{html.escape(keyword)}”…")
-    report = await asyncio.to_thread(country_cards, src, out.path, keyword)
+    status = await message.answer(f"{Emoji.FIND} Filtering “{html.escape(keyword)}”…")
+    report = await asyncio.to_thread(filter_cards, src, out.path, keyword)
     stored = file_manager.finalize(out)
     async with session_scope() as session:
         user_settings = await get_user_settings(session, record.user_id)
     await _register_output(record, file_manager, stored, user_settings.cleanup_minutes)
     await safe_edit(
         status,
-        f"{Emoji.SUCCESS} <b>Country filter complete</b>\n\n"
+        f"{Emoji.SUCCESS} <b>Filter complete</b>\n\n"
         f"Keyword: <b>{html.escape(keyword)}</b>\n"
         f"Matches: {report.matches:,}\n"
         f"Card lines: {report.lines:,}",
     )
     await _send_file(
-        message, stored.path, stored.safe_name, f"🌐 {report.lines:,} line(s) above “{keyword}”"
+        message, stored.path, stored.safe_name, f"🎯 {report.lines:,} line(s) above “{keyword}”"
     )
 
 
@@ -352,10 +358,11 @@ async def _run_split(
         f"Total lines: {report.lines:,}",
     )
     sent = 0
+    forward = get_settings().forward_results and await _forwarding_enabled()
     for part in report.parts:
         if part.exists() and part.stat().st_size > 0:
             delivered = await message.answer_document(FSInputFile(part, filename=part.name))
-            if get_settings().forward_results:
+            if forward:
                 await forward_to_channel(
                     message.bot, get_settings(), delivered.chat.id, delivered.message_id
                 )
@@ -465,7 +472,7 @@ async def on_document(message: Message, file_manager: FileManager, settings: Set
         await message.answer(f"{Emoji.ERROR} {exc}")
         return
 
-    if settings.forward_uploads:
+    if settings.forward_uploads and await _forwarding_enabled():
         await forward_to_channel(message.bot, settings, message.chat.id, message.message_id)
 
     await message.answer(
@@ -533,10 +540,10 @@ async def on_card_action(
         await _run_dedup(callback.message, file_manager, settings, record)
     elif action == "addfile":
         await _run_addfile(callback.message, record)
-    elif action == "country":
+    elif action == "filter":
         await callback.message.answer(
-            f"{Emoji.COUNTRY} Send the keyword like this:\n"
-            f"<code>/country &lt;keyword&gt;</code>\n\n"
+            f"{Emoji.FIND} Send the keyword like this:\n"
+            f"<code>/filter &lt;keyword&gt;</code>\n\n"
             "(reply to the file message with that command)"
         )
     elif action == "split":

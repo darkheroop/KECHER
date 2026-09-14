@@ -21,7 +21,7 @@ def main_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [_btn(f"{Emoji.FIND} Scrape", "menu:scrape"), _btn(f"{Emoji.CLEAN} Clean", "menu:clean")],
-            [_btn(f"{Emoji.LIVE_CHECK} Live Check", "menu:live"), _btn(f"{Emoji.COUNTRY} Country", "menu:country")],
+            [_btn(f"{Emoji.LIVE_CHECK} Live Check", "menu:live"), _btn(f"{Emoji.FIND} Filter", "menu:filter")],
             [_btn(f"{Emoji.SPLIT} Split", "menu:split"), _btn(f"{Emoji.RECYCLE} Dedup", "menu:dedup")],
             [_btn(f"{Emoji.PAGE} Add File", "menu:addfile"), _btn(f"{Emoji.STAR} Merge", "menu:merge")],
             [_btn(f"{Emoji.FIND} Find BIN", "menu:findbin")],
@@ -47,7 +47,7 @@ def card_actions(file_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [_btn(f"{Emoji.CLEAN} Clean", f"card:clean:{file_id}"), _btn(f"{Emoji.LIVE_CHECK} Live", f"card:live:{file_id}")],
-            [_btn(f"{Emoji.COUNTRY} Country", f"card:country:{file_id}"), _btn(f"{Emoji.SPLIT} Split", f"card:split:{file_id}")],
+            [_btn(f"{Emoji.FIND} Filter", f"card:filter:{file_id}"), _btn(f"{Emoji.SPLIT} Split", f"card:split:{file_id}")],
             [_btn(f"{Emoji.RECYCLE} Dedup", f"card:dedup:{file_id}"), _btn(f"{Emoji.PAGE} Add File", f"card:addfile:{file_id}")],
             [_btn(f"{Emoji.CANCEL} Cancel", f"card:cancel:{file_id}")],
         ]

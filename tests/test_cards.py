@@ -3,7 +3,7 @@ from pathlib import Path
 from bot.services.cards import (
     Card,
     clean_cards,
-    country_cards,
+    filter_cards,
     dedup_cards,
     extract_serial,
     format_card,
@@ -108,24 +108,24 @@ def test_live_cards_keeps_full_lines(tmp_path: Path) -> None:
     assert out.read_text(encoding="utf-8") == "4111111111111111|02|2028|555\n"
 
 
-def test_country_cards(tmp_path: Path) -> None:
+def test_filter_cards(tmp_path: Path) -> None:
     src = tmp_path / "in.txt"
     src.write_text(
         f"{VALID_A}\naustralia\n{VALID_B}\ncanada\n",
         encoding="utf-8",
     )
     out = tmp_path / "country.txt"
-    report = country_cards(src, out, "canada")
+    report = filter_cards(src, out, "canada")
     assert report.matches == 1
     assert report.lines == 1
     assert out.read_text(encoding="utf-8") == f"{VALID_B}\n"
 
 
-def test_country_cards_case_insensitive_and_multiple_above(tmp_path: Path) -> None:
+def test_filter_cards_case_insensitive_and_multiple_above(tmp_path: Path) -> None:
     src = tmp_path / "in.txt"
     src.write_text(f"{VALID_A}\n{VALID_B}\nCANADA\n", encoding="utf-8")
     out = tmp_path / "country.txt"
-    report = country_cards(src, out, "canada")
+    report = filter_cards(src, out, "canada")
     assert report.lines == 2
     assert out.read_text(encoding="utf-8") == f"{VALID_A}\n{VALID_B}\n"
 

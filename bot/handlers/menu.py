@@ -30,7 +30,7 @@ HELP_TEXT = (
     f"{Emoji.CLEAN} <code>/clean</code> — keep valid card records "
     "(<code>serial|date|time|invited</code>)\n"
     f"{Emoji.LIVE_CHECK} <code>/live</code> — keep serials that pass the Luhn check\n"
-    f"{Emoji.COUNTRY} <code>/country &lt;keyword&gt;</code> — card lines above that keyword\n"
+    f"{Emoji.FIND} <code>/filter &lt;keyword&gt;</code> — card lines above that keyword\n"
     f"{Emoji.SPLIT} <code>/split N</code> — split into N equal parts\n"
     f"{Emoji.RECYCLE} <code>/dedup</code> — remove duplicate lines\n\n"
     f"{Emoji.PAGE} <code>/addfile</code> then {Emoji.STAR} <code>/merge</code> — combine files\n"
@@ -42,7 +42,7 @@ MENU_INSTRUCTIONS = {
     "live": "Reply to a .txt file with <code>/live</code>.",
     "dedup": "Reply to a .txt file with <code>/dedup</code>.",
     "addfile": "Reply to a .txt file with <code>/addfile</code>.",
-    "country": "Reply to a .txt file with <code>/country &lt;keyword&gt;</code>.",
+    "filter": "Reply to a .txt file with <code>/filter &lt;keyword&gt;</code>.",
     "split": "Reply to a .txt file with <code>/split N</code>.",
 }
 
@@ -56,7 +56,7 @@ def welcome_text() -> str:
     return (
         f"{HEADER}\n"
         "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
-        "Manage wedding-card serial files.\n\n"
+        "Organise, validate and extract card serial records.\n\n"
         f"{Emoji.PAGE} Send a <b>.txt</b> file, or reply to one with a command.\n"
         f"{Emoji.HELP} /help for the full guide."
     )
