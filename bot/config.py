@@ -45,6 +45,8 @@ class Settings(BaseSettings):
     storage_root: Path = Path("./var/storage")
     max_file_size_mb: int = 2000
     user_disk_quota_mb: int = 5000
+    # Appended to result file names, e.g. "cards_clean@Lord_Jat.txt".
+    file_suffix: str = "@Lord_Jat"
 
     # --- Cleanup / retention ---
     cleanup_default_minutes: int = 10

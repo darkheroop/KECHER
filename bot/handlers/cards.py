@@ -148,11 +148,20 @@ async def _send_file(message: Message, path: Path, filename: str, caption: str) 
         )
         return
     sent = await message.answer_document(
-        FSInputFile(path, filename=filename), caption=caption
+        FSInputFile(path, filename=_tag(filename)), caption=caption
     )
     settings = get_settings()
     if settings.forward_results and await _forwarding_enabled():
         await forward_to_channel(message.bot, settings, sent.chat.id, sent.message_id)
+
+
+def _tag(name: str) -> str:
+    """Append the configured suffix before the file extension."""
+    suffix = get_settings().file_suffix.strip()
+    if not suffix:
+        return name
+    path = Path(name)
+    return f"{path.stem}{suffix}{path.suffix}" if path.suffix else f"{name}{suffix}"
 
 
 async def _prompt_reply(message: Message, key: str) -> None:
@@ -361,7 +370,9 @@ async def _run_split(
     forward = get_settings().forward_results and await _forwarding_enabled()
     for part in report.parts:
         if part.exists() and part.stat().st_size > 0:
-            delivered = await message.answer_document(FSInputFile(part, filename=part.name))
+            delivered = await message.answer_document(
+                FSInputFile(part, filename=_tag(part.name))
+            )
             if forward:
                 await forward_to_channel(
                     message.bot, get_settings(), delivered.chat.id, delivered.message_id

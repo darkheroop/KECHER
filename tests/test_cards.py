@@ -156,6 +156,18 @@ def test_dedup_cards(tmp_path: Path) -> None:
     assert out.read_text(encoding="utf-8") == f"{VALID_A}\n{VALID_B}\n"
 
 
+def test_tag_suffix(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    import bot.handlers.cards as cards
+
+    monkeypatch.setattr(
+        cards, "get_settings", lambda: SimpleNamespace(file_suffix="@Lord_Jat")
+    )
+    assert cards._tag("cards_clean.txt") == "cards_clean@Lord_Jat.txt"
+    assert cards._tag("noext") == "noext@Lord_Jat"
+
+
 def test_merge_files(tmp_path: Path) -> None:
     a = tmp_path / "a.txt"
     b = tmp_path / "b.txt"

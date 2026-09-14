@@ -33,6 +33,7 @@ from bot.db.repositories import (
     grant_user_access,
     list_access_keys,
     record_audit,
+    redeem_access_key,
     revoke_access_key,
     set_bot_setting,
     set_user_admin,
