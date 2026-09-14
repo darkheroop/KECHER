@@ -30,6 +30,7 @@ from bot.security.middleware import (
 )
 from bot.security.ratelimit import SlidingWindowLimiter
 from bot.services.file_manager import FileManager
+from bot.services.forwarder import forward_pending_files
 from bot.services.retention import reap_expired_files
 from bot.ui.commands import configure_bot
 from bot.ui.emoji import configure_custom
@@ -57,6 +58,27 @@ async def retention_loop(files: FileManager) -> None:
         except Exception:  # noqa: BLE001 - never let the reaper die
             logger.exception("Retention reaper iteration failed")
         await asyncio.sleep(REAP_INTERVAL_SECONDS)
+
+
+async def forward_loop(bot: Bot, files: FileManager, settings: Settings) -> None:
+    """Every N hours, forward any not-yet-forwarded files to the channel."""
+    interval = max(1, settings.forward_interval_hours) * 3600
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            from bot.db.engine import session_scope
+            from bot.db.repositories import get_bot_setting
+
+            async with session_scope() as session:
+                enabled = (
+                    await get_bot_setting(session, "forward_enabled", "false")
+                ) == "true"
+            if enabled and settings.forward_channel_id:
+                await forward_pending_files(bot, files, settings)
+        except asyncio.CancelledError:  # pragma: no cover - shutdown
+            raise
+        except Exception:  # noqa: BLE001
+            logger.exception("Forward sweep failed")
 
 
 async def run() -> None:
@@ -97,6 +119,9 @@ async def run() -> None:
     )
 
     reaper = asyncio.create_task(retention_loop(files), name="retention-reaper")
+    forwarder = asyncio.create_task(
+        forward_loop(bot, files, settings), name="forward-sweep"
+    )
 
     try:
         await configure_bot(bot)
@@ -109,8 +134,11 @@ async def run() -> None:
         await dispatcher.start_polling(bot, settings=settings, file_manager=files)
     finally:
         reaper.cancel()
+        forwarder.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await reaper
+        with contextlib.suppress(asyncio.CancelledError):
+            await forwarder
         await dispose_engine()
         await bot.session.close()
         logger.info("Shutdown complete")

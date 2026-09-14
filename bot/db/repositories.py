@@ -172,6 +172,15 @@ async def get_user_files_by_ids(
     return [found[fid] for fid in file_ids if fid in found]
 
 
+async def list_files_after(
+    session: AsyncSession, file_id: int, *, limit: int = 50
+) -> list[UserFile]:
+    result = await session.scalars(
+        select(UserFile).where(UserFile.id > file_id).order_by(UserFile.id).limit(limit)
+    )
+    return list(result)
+
+
 async def list_expired_files(session: AsyncSession, now: datetime | None = None) -> list[UserFile]:
     moment = now or _utcnow()
     result = await session.scalars(

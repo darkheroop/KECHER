@@ -81,6 +81,8 @@ class Settings(BaseSettings):
     forward_channel_id: str = ""
     forward_uploads: bool = True
     forward_results: bool = True
+    # How often the background sweep forwards pending files (hours).
+    forward_interval_hours: int = 6
 
     # --- Custom emoji ---
     custom_emoji_ids: Annotated[dict[str, str], NoDecode] = Field(default_factory=dict)

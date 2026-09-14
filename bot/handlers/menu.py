@@ -14,6 +14,7 @@ from bot.db.enums import UIMode
 from bot.db.repositories import get_user_settings, update_user_settings
 from bot.handlers.common import ensure_user
 from bot.handlers.cards import _run_merge
+from bot.security.access import is_admin
 from bot.services.file_manager import FileManager
 from bot.ui.emoji import Emoji
 from bot.ui.keyboards import main_menu, settings_menu
@@ -74,20 +75,28 @@ async def _mode(callback_or_message) -> str:  # noqa: ANN001
         return settings_row.ui_mode
 
 
+async def _is_admin(obj, settings: Settings) -> bool:  # noqa: ANN001
+    async with session_scope() as session:
+        user = await ensure_user(session, obj.from_user)
+        return is_admin(user, settings)
+
+
 @router.message(CommandStart())
-async def handle_start(message: Message) -> None:
+async def handle_start(message: Message, settings: Settings) -> None:
     async with session_scope() as session:
         user = await ensure_user(session, message.from_user)
         settings_row = await get_user_settings(session, user.id)
+        admin = is_admin(user, settings)
     if _is_button_mode(settings_row.ui_mode):
-        await message.answer(welcome_text(), reply_markup=main_menu())
+        await message.answer(welcome_text(), reply_markup=main_menu(admin))
     else:
         await message.answer(HELP_TEXT)
 
 
 @router.message(Command("menu"))
-async def handle_menu(message: Message) -> None:
-    await message.answer(welcome_text(), reply_markup=main_menu())
+async def handle_menu(message: Message, settings: Settings) -> None:
+    admin = await _is_admin(message, settings)
+    await message.answer(welcome_text(), reply_markup=main_menu(admin))
 
 
 @router.message(Command("help"))
@@ -96,8 +105,9 @@ async def handle_help(message: Message) -> None:
 
 
 @router.callback_query(F.data == "menu:home")
-async def menu_home(callback: CallbackQuery) -> None:
-    await safe_edit(callback.message, welcome_text(), reply_markup=main_menu())
+async def menu_home(callback: CallbackQuery, settings: Settings) -> None:
+    admin = await _is_admin(callback, settings)
+    await safe_edit(callback.message, welcome_text(), reply_markup=main_menu(admin))
     await callback.answer()
 
 

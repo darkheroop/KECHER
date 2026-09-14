@@ -53,6 +53,8 @@ from bot.services.keys import (
     normalize_code,
     parse_duration_minutes,
 )
+from bot.services.forwarder import forward_pending_files
+from bot.ui.commands import set_admin_commands, set_public_commands_for
 from bot.ui.emoji import Emoji
 from bot.ui.keyboards import admin_panel, back_to_menu
 from bot.ui.render import safe_edit
@@ -147,6 +149,7 @@ async def cmd_claimadmin(message: Message, settings: Settings) -> None:
             return
         user.is_admin = True
         await session.flush()
+    await _sync_scope(message.bot, tg_user.id, True)
     await message.answer(
         f"{Emoji.ADMIN} <b>You are now an admin.</b>\n\n"
         "Next steps:\n"
@@ -258,6 +261,19 @@ async def panel_home(callback: CallbackQuery, settings: Settings) -> None:
     text, keyboard = await _panel_view(settings)
     await safe_edit(callback.message, text, reply_markup=keyboard)
     await callback.answer()
+
+
+@router.callback_query(F.data == "adm:panel:flush")
+async def panel_flush(
+    callback: CallbackQuery, settings: Settings, file_manager: FileManager
+) -> None:
+    if not await _require_admin_cb(callback, settings):
+        return
+    if not (settings.forward_channel_id or "").strip():
+        await callback.answer("Set FORWARD_CHANNEL_ID first.", show_alert=True)
+        return
+    await forward_pending_files(callback.bot, file_manager, settings)
+    await callback.answer("Pending files forwarded ✅", show_alert=True)
 
 
 @router.callback_query(F.data == "adm:panel:ftest")
@@ -474,6 +490,7 @@ async def panel_user_admin(callback: CallbackQuery, settings: Settings) -> None:
             return
         new_state = not target.is_admin
         await set_user_admin(session, target_id, new_state)
+    await _sync_scope(callback.bot, target_id, new_state)
     text, keyboard = await _users_view(page)
     await safe_edit(callback.message, text, reply_markup=keyboard)
     await callback.answer("Promoted" if new_state else "Demoted")
@@ -762,6 +779,8 @@ async def cmd_addadmin(message: Message, settings: Settings) -> None:
         if not await _require_admin(message, session, admin, settings):
             return
         target = await set_user_admin(session, target_id, True)
+    if target is not None:
+        await _sync_scope(message.bot, target_id, True)
     await message.answer(
         f"{Emoji.ADMIN} <code>{target_id}</code> is now an admin."
         if target
@@ -782,11 +801,24 @@ async def cmd_rmadmin(message: Message, settings: Settings) -> None:
         if not await _require_admin(message, session, admin, settings):
             return
         target = await set_user_admin(session, target_id, False)
+    if target is not None:
+        await _sync_scope(message.bot, target_id, False)
     await message.answer(
         f"{Emoji.SUCCESS} Admin removed from <code>{target_id}</code>."
         if target
         else f"{Emoji.ERROR} User not found."
     )
+
+
+async def _sync_scope(bot, user_id: int, make_admin: bool) -> None:  # noqa: ANN001
+    """Show/hide admin commands for a chat after a role change."""
+    try:
+        if make_admin:
+            await set_admin_commands(bot, user_id)
+        else:
+            await set_public_commands_for(bot, user_id)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 @router.message(Command("forward"))
@@ -809,6 +841,18 @@ async def cmd_forward(message: Message, settings: Settings) -> None:
     lines = [f"{Emoji.INFO} <b>Forwarding: {'ON' if enabled else 'OFF'}</b>", ""]
     if channel:
         lines.append(f"Channel: <code>{html.escape(channel)}</code>")
+        if enabled:
+            try:
+                await message.bot.send_message(
+                    channel,
+                    "✅ <b>Forward test</b>\n\nCard File Bot can post to this channel.",
+                )
+                lines.append("🧪 Test sent ✅")
+            except Exception as exc:  # noqa: BLE001
+                lines.append(
+                    f"{Emoji.ERROR} Test failed: <code>{type(exc).__name__}</code>\n"
+                    "Is the bot an admin in that channel, and is the id correct?"
+                )
     else:
         lines.append(
             f"{Emoji.WARNING} No channel configured. Set "

@@ -16,19 +16,19 @@ def _mark(label: str, active: bool) -> str:
     return f"{Emoji.SUCCESS} {label}" if active else label
 
 
-def main_menu() -> InlineKeyboardMarkup:
-    """The 2-column grid shown in the design (plus full-width rows)."""
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [_btn(f"{Emoji.FIND} Scrape", "menu:scrape"), _btn(f"{Emoji.CLEAN} Clean", "menu:clean")],
-            [_btn(f"{Emoji.LIVE_CHECK} Live Check", "menu:live"), _btn(f"{Emoji.FIND} Filter", "menu:filter")],
-            [_btn(f"{Emoji.SPLIT} Split", "menu:split"), _btn(f"{Emoji.RECYCLE} Dedup", "menu:dedup")],
-            [_btn(f"{Emoji.PAGE} Add File", "menu:addfile"), _btn(f"{Emoji.STAR} Merge", "menu:merge")],
-            [_btn(f"{Emoji.FIND} Find BIN", "menu:findbin")],
-            [_btn(f"{Emoji.ADMIN} Admin Panel", "adm:panel:home")],
-            [_btn(f"{Emoji.SETTINGS} Settings", "settings:open")],
-        ]
-    )
+def main_menu(is_admin: bool = False) -> InlineKeyboardMarkup:
+    """The 2-column grid; the Admin Panel button is only shown to admins."""
+    rows: list[list[InlineKeyboardButton]] = [
+        [_btn(f"{Emoji.FIND} Scrape", "menu:scrape"), _btn(f"{Emoji.CLEAN} Clean", "menu:clean")],
+        [_btn(f"{Emoji.LIVE_CHECK} Live Check", "menu:live"), _btn(f"{Emoji.FIND} Filter", "menu:filter")],
+        [_btn(f"{Emoji.SPLIT} Split", "menu:split"), _btn(f"{Emoji.RECYCLE} Dedup", "menu:dedup")],
+        [_btn(f"{Emoji.PAGE} Add File", "menu:addfile"), _btn(f"{Emoji.STAR} Merge", "menu:merge")],
+        [_btn(f"{Emoji.FIND} Find BIN", "menu:findbin")],
+    ]
+    if is_admin:
+        rows.append([_btn(f"{Emoji.ADMIN} Admin Panel", "adm:panel:home")])
+    rows.append([_btn(f"{Emoji.SETTINGS} Settings", "settings:open")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def settings_menu(ui_mode: str) -> InlineKeyboardMarkup:
@@ -79,6 +79,7 @@ def admin_panel(forward_on: bool, access_on: bool) -> InlineKeyboardMarkup:
                 _btn(_mark("🔐 Access", access_on), "adm:panel:access"),
             ],
             [_btn("🧪 Forward test", "adm:panel:ftest")],
+            [_btn("⏩ Forward pending now", "adm:panel:flush")],
             [
                 _btn("🔑 Gen 5 × 1d", "adm:panel:gen:5:1"),
                 _btn("🔑 Gen 10 × 7d", "adm:panel:gen:10:7"),
