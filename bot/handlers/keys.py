@@ -904,6 +904,52 @@ async def cmd_forward(message: Message, settings: Settings) -> None:
     await message.answer("\n".join(lines))
 
 
+@router.message(Command("emojiid"))
+async def cmd_emojiid(message: Message, settings: Settings) -> None:
+    tg_user = message.from_user
+    assert tg_user is not None
+    async with session_scope() as session:
+        admin = await ensure_user(session, tg_user)
+        if not await _require_admin(message, session, admin, settings):
+            return
+
+    entities = message.entities or []
+    text = message.text or ""
+    if not any(getattr(e, "type", "") == "custom_emoji" for e in entities):
+        reply = message.reply_to_message
+        if reply is not None and reply.entities:
+            entities, text = reply.entities, reply.text or ""
+        else:
+            await message.answer(
+                f"{Emoji.SETTINGS} Send a message that contains a custom emoji, "
+                "or reply to one with <code>/emojiid</code>."
+            )
+            return
+
+    found = [
+        (text[e.offset : e.offset + e.length], e.custom_emoji_id)
+        for e in entities
+        if getattr(e, "type", "") == "custom_emoji"
+    ]
+    if not found:
+        await message.answer(
+            "No custom emoji found. Telegram Premium emojis are needed."
+        )
+        return
+
+    lines = [f"{Emoji.SETTINGS} <b>Custom emoji ids</b>", ""]
+    for symbol, custom_id in found:
+        lines.append(f"{symbol} → <code>{custom_id}</code>")
+    lines.extend(
+        [
+            "",
+            "Put them in <code>CUSTOM_EMOJI_IDS</code> (JSON), e.g.",
+            f'<code>{{"SUCCESS":"{found[0][1]}"}}</code>',
+        ]
+    )
+    await message.answer("\n".join(lines))
+
+
 @router.message(Command("block"))
 async def cmd_block(message: Message, settings: Settings) -> None:
     await _set_blocked(message, settings, True)

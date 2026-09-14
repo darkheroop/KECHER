@@ -131,6 +131,9 @@ async def handle_emojis(message: Message) -> None:
     lines = [
         f"{Emoji.SETTINGS} <b>Emoji customization</b>",
         "",
+        "Tip: send a message containing your premium emoji together with "
+        "<code>/emojiid</code> (admin) and the bot replies with its id.",
+        "",
         "Set <code>CUSTOM_EMOJI_IDS</code> in your environment as JSON "
         "mapping a name to a Telegram custom-emoji id:",
         '<code>{"SUCCESS":"5368324170671202286","CLEAN":"5368324170671202286"}</code>',
