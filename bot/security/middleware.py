@@ -22,13 +22,14 @@ logger = logging.getLogger(__name__)
 SLOW_DOWN_TEXT = f"{Emoji.WARNING} Too many requests. Please slow down."
 
 # Commands always allowed, even without an active key (needed to gain access).
-PUBLIC_COMMANDS = {"start", "menu", "help", "redeem", "mykey", "id", "claimadmin"}
+PUBLIC_COMMANDS = {"start", "menu", "help", "redeem", "mykey", "id", "claimadmin", "request"}
 
 NO_ACCESS_TEXT = (
     f"{Emoji.LOCK} <b>Access required</b>\n\n"
-    "You need an access key to use this bot.\n"
-    "Redeem one with <code>/redeem YOUR-KEY</code>.\n\n"
-    f"{Emoji.INFO} Already have access? Check it with /mykey."
+    "You need access to use this bot:\n"
+    "• Redeem a key: <code>/redeem YOUR-KEY</code>\n"
+    "• Or request access: /request\n\n"
+    f"{Emoji.INFO} Check your status with /mykey."
 )
 
 

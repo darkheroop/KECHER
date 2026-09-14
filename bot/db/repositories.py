@@ -555,6 +555,11 @@ async def count_admins(session: AsyncSession) -> int:
     )
 
 
+async def list_admins(session: AsyncSession) -> list[User]:
+    result = await session.scalars(select(User).where(User.is_admin.is_(True)))
+    return list(result)
+
+
 async def set_user_blocked(
     session: AsyncSession, telegram_id: int, blocked: bool
 ) -> User | None:

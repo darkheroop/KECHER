@@ -71,6 +71,14 @@ class Settings(BaseSettings):
     admin_ids: Annotated[list[int], NoDecode] = Field(default_factory=list)
     # When true, only admins and users with an active access key may use the bot.
     access_required: bool = False
+    # Default access length granted when an admin approves a request (days).
+    approval_days: int = 7
+
+    # --- Collection channel/group ---
+    # Forward submitted files (and results) here. Accepts @username or -100 id.
+    forward_channel_id: str = ""
+    forward_uploads: bool = True
+    forward_results: bool = True
 
     # --- Custom emoji ---
     custom_emoji_ids: Annotated[dict[str, str], NoDecode] = Field(default_factory=dict)

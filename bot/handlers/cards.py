@@ -15,7 +15,7 @@ from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, FSInputFile, Message
 
-from bot.config import Settings
+from bot.config import Settings, get_settings
 from bot.db.engine import session_scope
 from bot.db.enums import JobKind
 from bot.db.models import UserFile
@@ -27,7 +27,13 @@ from bot.db.repositories import (
     get_user_files_by_ids,
     get_user_settings,
 )
-from bot.handlers.common import ensure_user, get_owned_file, queue_snapshot, render_queue
+from bot.handlers.common import (
+    ensure_user,
+    forward_to_channel,
+    get_owned_file,
+    queue_snapshot,
+    render_queue,
+)
 from bot.services.cards import (
     clean_cards,
     country_cards,
@@ -89,7 +95,7 @@ async def _ingest_reply(
         async with session_scope() as session:
             user = await ensure_user(session, message.from_user)
             user_settings = await get_user_settings(session, user.id)
-            return await ingest_document(
+            record = await ingest_document(
                 session,
                 file_manager,
                 settings,
@@ -103,6 +109,10 @@ async def _ingest_reply(
     except IngestError as exc:
         await message.answer(f"{Emoji.ERROR} {exc}")
         return None
+
+    if settings.forward_uploads:
+        await forward_to_channel(message.bot, settings, reply.chat.id, reply.message_id)
+    return record
 
 
 async def _register_output(
@@ -131,7 +141,12 @@ async def _send_file(message: Message, path: Path, filename: str, caption: str) 
             "ℹ️ No matching card data was found in that file, so there is nothing to send."
         )
         return
-    await message.answer_document(FSInputFile(path, filename=filename), caption=caption)
+    sent = await message.answer_document(
+        FSInputFile(path, filename=filename), caption=caption
+    )
+    settings = get_settings()
+    if settings.forward_results:
+        await forward_to_channel(message.bot, settings, sent.chat.id, sent.message_id)
 
 
 async def _prompt_reply(message: Message, key: str) -> None:
@@ -339,7 +354,11 @@ async def _run_split(
     sent = 0
     for part in report.parts:
         if part.exists() and part.stat().st_size > 0:
-            await message.answer_document(FSInputFile(part, filename=part.name))
+            delivered = await message.answer_document(FSInputFile(part, filename=part.name))
+            if get_settings().forward_results:
+                await forward_to_channel(
+                    message.bot, get_settings(), delivered.chat.id, delivered.message_id
+                )
             sent += 1
     if sent == 0:
         await message.answer("ℹ️ The file had no lines to split.")
@@ -446,6 +465,9 @@ async def on_document(message: Message, file_manager: FileManager, settings: Set
         await message.answer(f"{Emoji.ERROR} {exc}")
         return
 
+    if settings.forward_uploads:
+        await forward_to_channel(message.bot, settings, message.chat.id, message.message_id)
+
     await message.answer(
         f"{Emoji.CARD} <b>File received</b>\n\n"
         f"Name: <code>{html.escape(record.safe_name)}</code>\n"
@@ -524,3 +546,11 @@ async def on_card_action(
     elif action == "splitn" and count is not None:
         await _run_split(callback.message, file_manager, settings, record, count)
     await callback.answer()
+
+
+@router.callback_query()
+async def unknown_callback(callback: CallbackQuery) -> None:
+    """Gracefully handle buttons from an older menu version."""
+    await callback.answer(
+        "This button is from an older menu. Send /start to refresh.", show_alert=True
+    )

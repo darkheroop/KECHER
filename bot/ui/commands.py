@@ -29,6 +29,7 @@ COMMANDS: list[BotCommand] = [
     BotCommand(command="settings", description="Button / text mode"),
     BotCommand(command="id", description="Your ID and access status"),
     BotCommand(command="mykey", description="Check your access"),
+    BotCommand(command="request", description="Request access from an admin"),
     BotCommand(command="redeem", description="Redeem an access key"),
     BotCommand(command="claimadmin", description="Become the first admin"),
     BotCommand(command="gen", description="Admin: generate keys"),

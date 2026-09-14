@@ -2,19 +2,26 @@
 
 from __future__ import annotations
 
-from aiogram.types import Message, User as TgUser
+import logging
+
+from aiogram import Bot
+from aiogram.types import InlineKeyboardMarkup, Message, User as TgUser
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from bot.config import Settings
 from bot.db.engine import session_scope
 from bot.db.models import User, UserFile
 from bot.db.repositories import (
     create_job,
     get_or_create_user,
     get_user_files_by_ids,
+    list_admins,
     list_queue_items,
 )
 from bot.jobs.manager import JobManager
 from bot.ui.emoji import Emoji
+
+logger = logging.getLogger(__name__)
 
 
 async def ensure_user(session: AsyncSession, tg_user: TgUser) -> User:
@@ -85,3 +92,43 @@ def render_queue(records: list[UserFile]) -> str:
         lines.append(f"{index}. {record.safe_name}")
     lines.extend(["", f"Total files: {len(records)}", "", "Use /merge when ready."])
     return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- #
+# Collection channel + admin notifications
+# --------------------------------------------------------------------------- #
+async def forward_to_channel(
+    bot: Bot, settings: Settings, chat_id: int, message_id: int
+) -> None:
+    """Forward a message to the configured collection channel (if any)."""
+    channel = (settings.forward_channel_id or "").strip()
+    if not channel:
+        return
+    try:
+        await bot.forward_message(
+            chat_id=channel, from_chat_id=chat_id, message_id=message_id
+        )
+    except Exception:  # noqa: BLE001 - forwarding must never break the flow
+        logger.exception("Failed to forward message to channel %s", channel)
+
+
+async def admin_telegram_ids(session: AsyncSession, settings: Settings) -> set[int]:
+    ids = set(settings.admin_ids)
+    for admin in await list_admins(session):
+        ids.add(admin.telegram_id)
+    return ids
+
+
+async def notify_admins(
+    bot: Bot,
+    settings: Settings,
+    text: str,
+    reply_markup: InlineKeyboardMarkup | None = None,
+) -> None:
+    async with session_scope() as session:
+        ids = await admin_telegram_ids(session, settings)
+    for admin_id in ids:
+        try:
+            await bot.send_message(admin_id, text, reply_markup=reply_markup)
+        except Exception:  # noqa: BLE001 - one bad admin must not stop the rest
+            logger.exception("Failed to notify admin %s", admin_id)

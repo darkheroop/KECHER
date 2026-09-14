@@ -3,12 +3,20 @@
 
 from __future__ import annotations
 
+import html
 from datetime import UTC, datetime
 from pathlib import Path
 
 from aiogram import F, Router
 from aiogram.filters import Command
-from aiogram.types import CallbackQuery, FSInputFile, Message, User as TgUser
+from aiogram.types import (
+    CallbackQuery,
+    FSInputFile,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+    User as TgUser,
+)
 
 from bot.config import Settings
 from bot.db.engine import session_scope
@@ -28,11 +36,12 @@ from bot.db.repositories import (
     set_user_admin,
     set_user_blocked,
 )
-from bot.handlers.common import ensure_user
+from bot.handlers.common import ensure_user, notify_admins
 from bot.security.access import (
     access_state,
     ensure_aware,
     format_remaining,
+    has_active_access,
     is_admin,
 )
 from bot.services.keys import (
@@ -139,6 +148,76 @@ async def cmd_claimadmin(message: Message, settings: Settings) -> None:
         "• <code>/gen 5 1</code> — 5 keys for 1 day\n"
         "• <code>/stats</code> — bot statistics"
     )
+
+
+@router.message(Command("request"))
+async def cmd_request(message: Message, settings: Settings) -> None:
+    tg_user = message.from_user
+    assert tg_user is not None
+    async with session_scope() as session:
+        user = await ensure_user(session, tg_user)
+        if is_admin(user, settings) or has_active_access(user):
+            await message.answer(f"{Emoji.CHECK} You already have access.")
+            return
+
+    name = html.escape(tg_user.first_name or "user")
+    username = f"@{tg_user.username}" if tg_user.username else "—"
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Approve", callback_data=f"adm:approve:{tg_user.id}"),
+                InlineKeyboardButton(text="⛔ Block", callback_data=f"adm:block:{tg_user.id}"),
+            ]
+        ]
+    )
+    await notify_admins(
+        message.bot,
+        settings,
+        f"{Emoji.LOCK} <b>Access request</b>\n\n"
+        f"{name} — <code>{tg_user.id}</code>\n{username}",
+        keyboard,
+    )
+    await message.answer(
+        f"{Emoji.CHECK} Request sent to the admins.\n"
+        "You'll be notified once it's approved."
+    )
+
+
+@router.callback_query(F.data.startswith("adm:"))
+async def adm_action(callback: CallbackQuery, settings: Settings) -> None:
+    parts = (callback.data or "").split(":")
+    if len(parts) != 3 or not parts[2].lstrip("-").isdigit():
+        await callback.answer("Invalid", show_alert=True)
+        return
+    action, target_id = parts[1], int(parts[2])
+
+    async with session_scope() as session:
+        admin = await ensure_user(session, callback.from_user)
+        if not is_admin(admin, settings):
+            await callback.answer("Admins only", show_alert=True)
+            return
+        target = await get_user_by_telegram_id(session, target_id)
+        if target is None:
+            await callback.answer("User not found", show_alert=True)
+            return
+        if action == "approve":
+            until = await grant_user_access(
+                session, target, minutes=max(1, settings.approval_days) * 1440
+            )
+            summary = f"✅ Approved <code>{target_id}</code> until {until:%Y-%m-%d %H:%M} UTC"
+            user_note = "✅ Your access was approved. Send /start to begin."
+        else:
+            await set_user_blocked(session, target_id, True)
+            summary = f"⛔ Blocked <code>{target_id}</code>"
+            user_note = "⛔ You have been blocked by an admin."
+
+    try:
+        await callback.bot.send_message(target_id, user_note)
+    except Exception:  # noqa: BLE001 - user may have blocked the bot
+        pass
+    if callback.message is not None:
+        await callback.message.edit_text(summary)
+    await callback.answer("Done")
 
 
 @router.message(Command("redeem"))
