@@ -70,6 +70,30 @@ def back_to_menu() -> InlineKeyboardMarkup:
     )
 
 
+def admin_panel(forward_on: bool, access_on: bool) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                _btn(_mark("📡 Forward", forward_on), "adm:panel:forward"),
+                _btn(_mark("🔐 Access", access_on), "adm:panel:access"),
+            ],
+            [
+                _btn("🔑 Gen 5 × 1d", "adm:panel:gen:5:1"),
+                _btn("🔑 Gen 10 × 7d", "adm:panel:gen:10:7"),
+            ],
+            [
+                _btn(f"{Emoji.KEY} Keys", "adm:panel:keys"),
+                _btn(f"{Emoji.STATS} Stats", "adm:panel:stats"),
+            ],
+            [
+                _btn(f"{Emoji.USER} Users", "adm:panel:users"),
+                _btn(f"{Emoji.SETTINGS} Settings", "settings:open"),
+            ],
+            [_btn(f"{Emoji.BACK} Back", "menu:home")],
+        ]
+    )
+
+
 def clear_queue_confirm(count: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[

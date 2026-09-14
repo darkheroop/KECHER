@@ -32,6 +32,7 @@ from bot.db.repositories import (
     get_user_by_telegram_id,
     grant_user_access,
     list_access_keys,
+    list_users,
     record_audit,
     redeem_access_key,
     revoke_access_key,
@@ -53,7 +54,8 @@ from bot.services.keys import (
     parse_duration_minutes,
 )
 from bot.ui.emoji import Emoji
-from bot.ui.keyboards import back_to_menu
+from bot.ui.keyboards import admin_panel, back_to_menu
+from bot.ui.render import safe_edit
 
 router = Router(name="keys")
 
@@ -186,7 +188,180 @@ async def cmd_request(message: Message, settings: Settings) -> None:
     )
 
 
-@router.callback_query(F.data.startswith("adm:"))
+# --------------------------------------------------------------------------- #
+# Admin panel
+# --------------------------------------------------------------------------- #
+def _panel_back() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Back to panel", callback_data="adm:panel:home")]
+        ]
+    )
+
+
+async def _panel_state(session, settings: Settings) -> tuple[bool, bool]:  # noqa: ANN001
+    forward_on = (await get_bot_setting(session, "forward_enabled", "false")) == "true"
+    default_access = "true" if settings.access_required else "false"
+    access_on = (
+        await get_bot_setting(session, "access_required", default_access)
+    ) == "true"
+    return forward_on, access_on
+
+
+async def _panel_view(settings: Settings) -> tuple[str, InlineKeyboardMarkup]:
+    async with session_scope() as session:
+        forward_on, access_on = await _panel_state(session, settings)
+        users = await count_rows(session, User)
+        admins = await count_admins(session)
+        active = await count_active_access(session)
+        keys = await count_rows(session, AccessKey)
+
+    channel = (settings.forward_channel_id or "").strip() or "not set"
+    text = (
+        f"{Emoji.ADMIN} <b>Admin panel</b>\n"
+        "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
+        f"📡 Forwarding: <b>{'ON' if forward_on else 'OFF'}</b>\n"
+        f"   Channel: <code>{html.escape(channel)}</code>\n"
+        f"🔐 Access required: <b>{'ON' if access_on else 'OFF'}</b>\n\n"
+        f"👥 Users: <b>{users:,}</b>\n"
+        f"👑 Admins: <b>{admins:,}</b>\n"
+        f"✅ Active: <b>{active:,}</b>\n"
+        f"🔑 Keys: <b>{keys:,}</b>"
+    )
+    return text, admin_panel(forward_on, access_on)
+
+
+async def _require_admin_cb(callback: CallbackQuery, settings: Settings) -> bool:
+    async with session_scope() as session:
+        admin = await ensure_user(session, callback.from_user)
+        if not is_admin(admin, settings):
+            await callback.answer("Admins only", show_alert=True)
+            return False
+    return True
+
+
+@router.message(Command("admin"))
+async def cmd_admin(message: Message, settings: Settings) -> None:
+    async with session_scope() as session:
+        user = await ensure_user(session, message.from_user)
+        if not is_admin(user, settings):
+            await message.answer(f"{Emoji.DENIED} Admins only.")
+            return
+    text, keyboard = await _panel_view(settings)
+    await message.answer(text, reply_markup=keyboard)
+
+
+@router.callback_query(F.data == "adm:panel:home")
+async def panel_home(callback: CallbackQuery, settings: Settings) -> None:
+    if not await _require_admin_cb(callback, settings):
+        return
+    text, keyboard = await _panel_view(settings)
+    await safe_edit(callback.message, text, reply_markup=keyboard)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "adm:panel:forward")
+async def panel_forward(callback: CallbackQuery, settings: Settings) -> None:
+    if not await _require_admin_cb(callback, settings):
+        return
+    async with session_scope() as session:
+        current = (await get_bot_setting(session, "forward_enabled", "false")) == "true"
+        await set_bot_setting(
+            session, "forward_enabled", "false" if current else "true"
+        )
+    text, keyboard = await _panel_view(settings)
+    await safe_edit(callback.message, text, reply_markup=keyboard)
+    await callback.answer("Forwarding toggled")
+
+
+@router.callback_query(F.data == "adm:panel:access")
+async def panel_access(callback: CallbackQuery, settings: Settings) -> None:
+    if not await _require_admin_cb(callback, settings):
+        return
+    async with session_scope() as session:
+        default_access = "true" if settings.access_required else "false"
+        current = (
+            await get_bot_setting(session, "access_required", default_access)
+        ) == "true"
+        await set_bot_setting(
+            session, "access_required", "false" if current else "true"
+        )
+    text, keyboard = await _panel_view(settings)
+    await safe_edit(callback.message, text, reply_markup=keyboard)
+    await callback.answer("Access mode toggled")
+
+
+@router.callback_query(F.data.startswith("adm:panel:gen:"))
+async def panel_gen(callback: CallbackQuery, settings: Settings) -> None:
+    if not await _require_admin_cb(callback, settings):
+        return
+    parts = (callback.data or "").split(":")
+    if len(parts) != 5 or not parts[3].isdigit() or not parts[4].isdigit():
+        await callback.answer("Invalid", show_alert=True)
+        return
+    count, days = int(parts[3]), int(parts[4])
+    async with session_scope() as session:
+        admin = await ensure_user(session, callback.from_user)
+        keys = await create_access_keys(
+            session, count=count, duration_minutes=days * 1440, created_by=admin.id
+        )
+        codes = [key.code for key in keys]
+    body = "\n".join(f"<code>{code}</code>" for code in codes)
+    if callback.message is not None:
+        await callback.message.answer(
+            f"{Emoji.GENERATE} <b>{count} key(s)</b> — {format_duration(days * 1440)} each\n\n{body}"
+        )
+    await callback.answer("Generated")
+
+
+@router.callback_query(F.data == "adm:panel:keys")
+async def panel_keys(callback: CallbackQuery, settings: Settings) -> None:
+    if not await _require_admin_cb(callback, settings):
+        return
+    async with session_scope() as session:
+        keys = await list_access_keys(session, limit=20, unredeemed_only=True)
+    if not keys:
+        body = "No unredeemed keys."
+    else:
+        body = "\n".join(
+            f"<code>{key.code}</code> — {format_duration(key.duration_minutes)}"
+            for key in keys
+        )
+    await safe_edit(callback.message, f"{Emoji.KEY} <b>Unredeemed keys</b>\n\n{body}", reply_markup=_panel_back())
+    await callback.answer()
+
+
+@router.callback_query(F.data == "adm:panel:stats")
+async def panel_stats(callback: CallbackQuery, settings: Settings) -> None:
+    if not await _require_admin_cb(callback, settings):
+        return
+    text, _ = await _panel_view(settings)
+    await safe_edit(callback.message, text, reply_markup=_panel_back())
+    await callback.answer()
+
+
+@router.callback_query(F.data == "adm:panel:users")
+async def panel_users(callback: CallbackQuery, settings: Settings) -> None:
+    if not await _require_admin_cb(callback, settings):
+        return
+    async with session_scope() as session:
+        users = await list_users(session, limit=25)
+    lines = [f"{Emoji.USER} <b>Recent users</b>", ""]
+    for user in users:
+        flags = []
+        if user.is_admin:
+            flags.append("👑")
+        if user.is_blocked:
+            flags.append("⛔")
+        name = html.escape(user.first_name or "")
+        lines.append(f"<code>{user.telegram_id}</code> {name} {' '.join(flags)}".rstrip())
+    lines.append("")
+    lines.append("Use /block, /unblock, /addadmin, /rmadmin, /grant &lt;id&gt;.")
+    await safe_edit(callback.message, "\n".join(lines), reply_markup=_panel_back())
+    await callback.answer()
+
+
+@router.callback_query(F.data.regexp(r"^adm:(approve|block):-?\d+$"))
 async def adm_action(callback: CallbackQuery, settings: Settings) -> None:
     parts = (callback.data or "").split(":")
     if len(parts) != 3 or not parts[2].lstrip("-").isdigit():

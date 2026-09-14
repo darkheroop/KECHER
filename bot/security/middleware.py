@@ -12,7 +12,7 @@ from aiogram.types import CallbackQuery, Message, TelegramObject
 
 from bot.config import Settings
 from bot.db.engine import session_scope
-from bot.db.repositories import get_or_create_user
+from bot.db.repositories import get_bot_setting, get_or_create_user
 from bot.security.access import has_active_access, is_admin
 from bot.security.ratelimit import SlidingWindowLimiter
 from bot.ui.emoji import Emoji
@@ -94,13 +94,18 @@ class AccessMiddleware(BaseMiddleware):
             blocked = db_user.is_blocked
             admin = is_admin(db_user, self._settings)
             active = has_active_access(db_user)
+            # Runtime override (admin panel) takes precedence over the env default.
+            override = await get_bot_setting(session, "access_required", None)
+            access_required = (
+                override == "true" if override is not None else self._settings.access_required
+            )
 
         # Blocked users get nothing, regardless of access mode.
         if blocked:
             await self._notify(event, f"{Emoji.DENIED} You are blocked.")
             return None
 
-        if not self._settings.access_required:
+        if not access_required:
             return await handler(event, data)
 
         if _command_of(event) in PUBLIC_COMMANDS:
