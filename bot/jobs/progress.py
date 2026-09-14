@@ -91,7 +91,7 @@ class ProgressReporter:
         self._message_id = message_id
         self._enabled = enabled and notifier is not None and chat_id is not None
         self._min_interval = min_interval
-        self._last_sent = 0.0
+        self._last_sent = float("-inf")
         self._last_percent = -1
 
     @property
