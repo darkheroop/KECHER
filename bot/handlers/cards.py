@@ -126,6 +126,11 @@ def _resolve(record: UserFile, files: FileManager, telegram_id: int) -> Path:
 
 
 async def _send_file(message: Message, path: Path, filename: str, caption: str) -> None:
+    if not path.exists() or path.stat().st_size == 0:
+        await message.answer(
+            "ℹ️ No matching card data was found in that file, so there is nothing to send."
+        )
+        return
     await message.answer_document(FSInputFile(path, filename=filename), caption=caption)
 
 
@@ -331,8 +336,13 @@ async def _run_split(
         f"Parts: {len(report.parts):,}\n"
         f"Total lines: {report.lines:,}",
     )
+    sent = 0
     for part in report.parts:
-        await message.answer_document(FSInputFile(part, filename=part.name))
+        if part.exists() and part.stat().st_size > 0:
+            await message.answer_document(FSInputFile(part, filename=part.name))
+            sent += 1
+    if sent == 0:
+        await message.answer("ℹ️ The file had no lines to split.")
 
 
 # --------------------------------------------------------------------------- #

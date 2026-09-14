@@ -24,9 +24,15 @@ ProgressFn = Callable[[int], None]
 
 # serial(16) | date(2) | time(2 or 4) | invited(3 or 4)
 CARD_RE = re.compile(
-    r"^\s*(\d{16})\s*\|\s*(\d{2})\s*\|\s*(\d{2}|\d{4})\s*\|\s*(\d{3}|\d{4})\s*$"
+    r"^\s*(\d{16})\s*\|\s*(\d{2})\s*\|\s*(\d{4}|\d{2})\s*\|\s*(\d{4}|\d{3})\s*$"
+)
+# Same pattern, but matched anywhere inside a line (handles messy files with
+# surrounding text/emoji).
+CARD_SEARCH_RE = re.compile(
+    r"(\d{16})\s*\|\s*(\d{2})\s*\|\s*(\d{4}|\d{2})\s*\|\s*(\d{4}|\d{3})"
 )
 SERIAL_RE = re.compile(r"^\s*(\d{16})\s*$")
+SERIAL_ANY_RE = re.compile(r"\d{16}")
 
 READ_ENCODING = "utf-8-sig"
 WRITE_ENCODING = "utf-8"
@@ -100,13 +106,26 @@ def format_card(card: Card) -> str:
     return f"{card.serial}|{card.date}|{card.time}|{card.invited}"
 
 
+def extract_cards(line: str) -> list[Card]:
+    """Find every card record anywhere inside a line (messy files OK)."""
+    return [Card(*match.groups()) for match in CARD_SEARCH_RE.finditer(line or "")]
+
+
+def is_card_line(line: str) -> bool:
+    """True if the line contains a card record or is a bare 16-digit serial."""
+    return bool(extract_cards(line)) or bool(SERIAL_RE.match(line or ""))
+
+
 def extract_serial(line: str) -> str | None:
-    """Return the 16-digit serial from a card line or a bare serial line."""
+    """Return the first 16-digit serial found in the line, if any."""
     card = parse_card(line)
     if card is not None:
         return card.serial
     match = SERIAL_RE.match(line or "")
-    return match.group(1) if match else None
+    if match:
+        return match.group(1)
+    found = SERIAL_ANY_RE.search(line or "")
+    return found.group(0) if found else None
 
 
 def iter_lines(path: str | Path) -> Iterator[str]:
@@ -131,12 +150,13 @@ def clean_cards(
     try:
         for index, line in enumerate(iter_lines(src), start=1):
             report.total += 1
-            card = parse_card(line)
-            if card is None:
+            cards = extract_cards(line)
+            if not cards:
                 report.invalid += 1
             else:
                 report.valid += 1
-                handle.write(format_card(card) + "\n")
+                for card in cards:
+                    handle.write(format_card(card) + "\n")
             if on_progress:
                 on_progress(index)
     finally:
@@ -156,11 +176,11 @@ def live_cards(
     try:
         for index, line in enumerate(iter_lines(src), start=1):
             report.total += 1
-            serial = extract_serial(line)
-            if serial is None:
+            serials = SERIAL_ANY_RE.findall(line)
+            if not serials:
                 continue
             report.checked += 1
-            if luhn_valid(serial):
+            if any(luhn_valid(serial) for serial in serials):
                 report.valid += 1
                 handle.write(line.strip() + "\n")
             else:
@@ -189,7 +209,7 @@ def country_cards(
             # Walk upward collecting the consecutive card lines.
             block: list[str] = []
             cursor = index - 1
-            while cursor >= 0 and parse_card(lines[cursor]) is not None:
+            while cursor >= 0 and is_card_line(lines[cursor]):
                 block.append(lines[cursor])
                 cursor -= 1
             collected.extend(reversed(block))

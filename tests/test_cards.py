@@ -47,6 +47,39 @@ def test_extract_serial() -> None:
     assert extract_serial("not a serial") is None
 
 
+def test_clean_cards_extracts_from_messy_lines(tmp_path: Path) -> None:
+    src = tmp_path / "messy.txt"
+    src.write_text(
+        "🎉 PROMO!! 1234567891234567|02|2028|555 ✅ thanks\n"
+        "random text with no card\n"
+        "two cards 1111111111111111|02|28|555 and 2222222222222222|02|2028|5555 🎊\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "out.txt"
+    report = clean_cards(src, out)
+    assert report.valid == 2
+    assert report.invalid == 1
+    assert out.read_text(encoding="utf-8") == (
+        "1234567891234567|02|2028|555\n"
+        "1111111111111111|02|28|555\n"
+        "2222222222222222|02|2028|5555\n"
+    )
+
+
+def test_live_cards_from_messy_lines(tmp_path: Path) -> None:
+    src = tmp_path / "messy.txt"
+    src.write_text(
+        "hello ✅ 4111111111111111 is valid\n"
+        "nope 4242424242424241 not valid\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "live.txt"
+    report = live_cards(src, out)
+    assert report.checked == 2
+    assert report.valid == 1
+    assert out.read_text(encoding="utf-8") == "hello ✅ 4111111111111111 is valid\n"
+
+
 def test_clean_cards(tmp_path: Path) -> None:
     src = tmp_path / "in.txt"
     src.write_text(
