@@ -34,7 +34,7 @@ PUBLIC_COMMANDS: list[BotCommand] = [
     BotCommand(command="merge", description="Combine the queued files"),
     BotCommand(command="clearqueue", description="Clear the merge queue"),
     BotCommand(command="scrape", description="Import from a source (coming soon)"),
-    BotCommand(command="findbin", description="Find BIN info (coming soon)"),
+    BotCommand(command="findbin", description="Extract records for a numeric BIN"),
     BotCommand(command="settings", description="Button / text mode"),
     BotCommand(command="emojis", description="How to customise the emojis"),
     BotCommand(command="id", description="Your ID and access status"),

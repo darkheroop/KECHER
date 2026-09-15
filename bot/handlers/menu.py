@@ -45,12 +45,12 @@ MENU_INSTRUCTIONS = {
     "dedup": "Reply to a .txt file with <code>/dedup</code>.",
     "addfile": "Reply to a .txt file with <code>/addfile</code>.",
     "filter": "Reply to a .txt file with <code>/filter &lt;keyword&gt;</code>.",
+    "findbin": "Reply to a .txt file with <code>/findbin &lt;digits&gt;</code>.",
     "split": "Reply to a .txt file with <code>/split N</code>.",
 }
 
 COMING_SOON = {
     "scrape": "Scrape",
-    "findbin": "Find BIN",
 }
 
 
@@ -173,7 +173,9 @@ async def menu_coming_soon(callback: CallbackQuery) -> None:
 @router.callback_query(F.data == "menu:merge")
 async def menu_merge(callback: CallbackQuery, file_manager: FileManager) -> None:
     if callback.message is not None:
-        await _run_merge(callback.message, file_manager)
+        await _run_merge(
+            callback.message, file_manager, callback.from_user, callback.from_user.id
+        )
     await callback.answer()
 
 

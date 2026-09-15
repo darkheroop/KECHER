@@ -40,6 +40,32 @@ logger = logging.getLogger(__name__)
 REAP_INTERVAL_SECONDS = 300
 
 
+async def verify_custom_emoji(bot: Bot, settings: Settings) -> None:
+    """Disable premium emoji if this bot isn't allowed to use them.
+
+    Telegram only lets bots use custom emoji if they own a Fragment-collected
+    username; otherwise messages with <tg-emoji> are rejected. We probe once
+    against an admin chat and fall back to Unicode automatically.
+    """
+    if not settings.custom_emoji_ids:
+        return
+    target = settings.admin_ids[0] if settings.admin_ids else None
+    if target is None:
+        logger.info("No ADMIN_IDS set; skipping custom-emoji verification")
+        return
+    sample = next(iter(settings.custom_emoji_ids.values()))
+    try:
+        await bot.send_message(
+            target, f'<tg-emoji emoji-id="{sample}">✅</tg-emoji> emoji check'
+        )
+    except Exception as exc:  # noqa: BLE001
+        configure_custom(None)
+        logger.warning(
+            "Premium emoji not supported (%s); using Unicode fallback",
+            type(exc).__name__,
+        )
+
+
 def build_bot(settings: Settings) -> Bot:
     token = settings.bot_token.get_secret_value()
     default = DefaultBotProperties(parse_mode=ParseMode.HTML)
@@ -128,6 +154,8 @@ async def run() -> None:
         logger.info("Bot command menu configured")
     except Exception:  # noqa: BLE001 - never block startup on profile setup
         logger.exception("Could not configure bot commands (continuing)")
+
+    await verify_custom_emoji(bot, settings)
 
     logger.info("Starting bot (environment=%s)", settings.environment)
     try:

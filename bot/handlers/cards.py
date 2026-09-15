@@ -65,6 +65,7 @@ REPLY_PROMPT = {
     "clean": "🧹 Reply to a .txt file with /clean to extract valid records.",
     "live": "🕵️ Reply to a .txt file with /live to keep Luhn-valid records.",
     "filter": "🎯 Reply to a .txt with /filter 123456 (series) or /filter canada (keyword).",
+    "findbin": "🎯 Reply to a .txt with /findbin 411111 (numbers only).",
     "split": "✂️ Reply to a .txt file with /split N to split it into N equal parts.",
     "dedup": "♻️ Reply to a .txt file with /dedup to remove duplicate lines.",
     "addfile": "📄 Reply to a .txt file with /addfile to add it to the merge queue.",
@@ -177,7 +178,7 @@ async def cmd_clean(message: Message, file_manager: FileManager, settings: Setti
     if record is None:
         await _prompt_reply(message, "clean")
         return
-    await _run_clean(message, file_manager, settings, record)
+    await _run_clean(message, file_manager, settings, record, message.from_user.id)
 
 
 @router.message(Command("live"))
@@ -186,7 +187,7 @@ async def cmd_live(message: Message, file_manager: FileManager, settings: Settin
     if record is None:
         await _prompt_reply(message, "live")
         return
-    await _run_live(message, file_manager, settings, record)
+    await _run_live(message, file_manager, settings, record, message.from_user.id)
 
 
 @router.message(Command("dedup"))
@@ -195,7 +196,7 @@ async def cmd_dedup(message: Message, file_manager: FileManager, settings: Setti
     if record is None:
         await _prompt_reply(message, "dedup")
         return
-    await _run_dedup(message, file_manager, settings, record)
+    await _run_dedup(message, file_manager, settings, record, message.from_user.id)
 
 
 @router.message(Command("addfile"))
@@ -204,13 +205,12 @@ async def cmd_addfile(message: Message, file_manager: FileManager, settings: Set
     if record is None:
         await _prompt_reply(message, "addfile")
         return
-    await _run_addfile(message, record)
+    await _run_addfile(message, record, message.from_user)
 
 
 async def _run_clean(
-    message: Message, files: FileManager, settings: Settings, record: UserFile
+    message: Message, files: FileManager, settings: Settings, record: UserFile, telegram_id: int
 ) -> None:
-    telegram_id = message.from_user.id
     src = _resolve(record, files, telegram_id)
     out = files.allocate(telegram_id, f"{Path(record.safe_name).stem}_clean.txt", subdir="out")
     status = await message.answer(f"{Emoji.CLEAN} Cleaning…")
@@ -230,9 +230,8 @@ async def _run_clean(
 
 
 async def _run_live(
-    message: Message, files: FileManager, settings: Settings, record: UserFile
+    message: Message, files: FileManager, settings: Settings, record: UserFile, telegram_id: int
 ) -> None:
-    telegram_id = message.from_user.id
     src = _resolve(record, files, telegram_id)
     out = files.allocate(telegram_id, f"{Path(record.safe_name).stem}_live.txt", subdir="out")
     status = await message.answer(f"{Emoji.LIVE_CHECK} Checking cards…")
@@ -252,9 +251,8 @@ async def _run_live(
 
 
 async def _run_dedup(
-    message: Message, files: FileManager, settings: Settings, record: UserFile
+    message: Message, files: FileManager, settings: Settings, record: UserFile, telegram_id: int
 ) -> None:
-    telegram_id = message.from_user.id
     src = _resolve(record, files, telegram_id)
     out = files.allocate(telegram_id, f"{Path(record.safe_name).stem}_dedup.txt", subdir="out")
     status = await message.answer(f"{Emoji.RECYCLE} Deduplicating…")
@@ -273,9 +271,9 @@ async def _run_dedup(
     await _send_file(message, stored.path, stored.safe_name, f"♻️ {report.unique:,} unique line(s)")
 
 
-async def _run_addfile(message: Message, record: UserFile) -> None:
+async def _run_addfile(message: Message, record: UserFile, tg_user) -> None:  # noqa: ANN001
     async with session_scope() as session:
-        user = await ensure_user(session, message.from_user)
+        user = await ensure_user(session, tg_user)
         await add_queue_item(session, user.id, record.id)
         records = await queue_snapshot(session, user.id)
     await message.answer(
@@ -318,29 +316,60 @@ async def cmd_filter(message: Message, file_manager: FileManager, settings: Sett
     if record is None:
         await _prompt_reply(message, "filter")
         return
-
-    telegram_id = message.from_user.id
-    src = _resolve(record, file_manager, telegram_id)
-    safe = "".join(ch if ch.isalnum() else "_" for ch in argument)[:40] or "filter"
-    out = file_manager.allocate(
-        telegram_id, f"{Path(record.safe_name).stem}_{safe}.txt", subdir="out"
+    await _run_filter(
+        message, file_manager, settings, record, argument, mode, message.from_user.id
     )
+
+
+async def _run_filter(
+    message: Message,
+    files: FileManager,
+    settings: Settings,
+    record: UserFile,
+    value: str,
+    mode: str,
+    telegram_id: int,
+) -> None:
+    src = _resolve(record, files, telegram_id)
+    safe = "".join(ch if ch.isalnum() else "_" for ch in value)[:40] or "filter"
+    out = files.allocate(telegram_id, f"{Path(record.safe_name).stem}_{safe}.txt", subdir="out")
     label = "series" if mode == "prefix" else "keyword"
-    status = await message.answer(f"{Emoji.FIND} Filtering by {label} “{html.escape(argument)}”…")
-    report = await asyncio.to_thread(filter_cards, src, out.path, argument, mode=mode)
-    stored = file_manager.finalize(out)
+    status = await message.answer(f"{Emoji.FIND} Filtering by {label} “{html.escape(value)}”…")
+    report = await asyncio.to_thread(filter_cards, src, out.path, value, mode=mode)
+    stored = files.finalize(out)
     async with session_scope() as session:
         user_settings = await get_user_settings(session, record.user_id)
-    await _register_output(record, file_manager, stored, user_settings.cleanup_minutes)
+    await _register_output(record, files, stored, user_settings.cleanup_minutes)
     await safe_edit(
         status,
         f"{Emoji.SUCCESS} <b>Filter complete</b>\n\n"
-        f"{label.title()}: <b>{html.escape(argument)}</b>\n"
+        f"{label.title()}: <b>{html.escape(value)}</b>\n"
         f"Matches: {report.matches:,}\n"
         f"Card lines: {report.lines:,}",
     )
     await _send_file(
-        message, stored.path, stored.safe_name, f"🎯 {report.lines:,} line(s) for “{argument}”"
+        message, stored.path, stored.safe_name, f"🎯 {report.lines:,} line(s) for “{value}”"
+    )
+
+
+@router.message(Command("findbin"))
+async def cmd_findbin(message: Message, file_manager: FileManager, settings: Settings) -> None:
+    parts = (message.text or "").split(maxsplit=1)
+    argument = parts[1].strip() if len(parts) > 1 else ""
+    if not argument.isdigit():
+        await message.answer(
+            f"{Emoji.FIND} <b>Find BIN</b>\n\n"
+            "Extract every record whose serial matches a numeric BIN/series.\n"
+            "Numbers only, e.g. <code>/findbin 411111</code>\n\n"
+            "(reply to a .txt file with that command)"
+        )
+        return
+    record = await _ingest_reply(message, file_manager, settings)
+    if record is None:
+        await _prompt_reply(message, "findbin")
+        return
+    await _run_filter(
+        message, file_manager, settings, record, argument, "prefix", message.from_user.id
     )
 
 
@@ -366,13 +395,17 @@ async def cmd_split(message: Message, file_manager: FileManager, settings: Setti
     if record is None:
         await _prompt_reply(message, "split")
         return
-    await _run_split(message, file_manager, settings, record, count)
+    await _run_split(message, file_manager, settings, record, count, message.from_user.id)
 
 
 async def _run_split(
-    message: Message, files: FileManager, settings: Settings, record: UserFile, count: int
+    message: Message,
+    files: FileManager,
+    settings: Settings,
+    record: UserFile,
+    count: int,
+    telegram_id: int,
 ) -> None:
-    telegram_id = message.from_user.id
     src = _resolve(record, files, telegram_id)
     out_dir = files.user_root(telegram_id) / "out" / f"{Path(record.safe_name).stem}_parts"
     status = await message.answer(f"{Emoji.SPLIT} Splitting into {count} parts…")
@@ -404,13 +437,12 @@ async def _run_split(
 # --------------------------------------------------------------------------- #
 @router.message(Command("merge"))
 async def cmd_merge(message: Message, file_manager: FileManager, settings: Settings) -> None:
-    await _run_merge(message, file_manager)
+    await _run_merge(message, file_manager, message.from_user, message.from_user.id)
 
 
-async def _run_merge(message: Message, files: FileManager) -> None:
-    telegram_id = message.from_user.id
+async def _run_merge(message: Message, files: FileManager, tg_user, telegram_id: int) -> None:  # noqa: ANN001
     async with session_scope() as session:
-        user = await ensure_user(session, message.from_user)
+        user = await ensure_user(session, tg_user)
         records = await queue_snapshot(session, user.id)
         user_settings = await get_user_settings(session, user.id)
 
@@ -561,13 +593,13 @@ async def on_card_action(
         return
 
     if action == "clean":
-        await _run_clean(callback.message, file_manager, settings, record)
+        await _run_clean(callback.message, file_manager, settings, record, telegram_id)
     elif action == "live":
-        await _run_live(callback.message, file_manager, settings, record)
+        await _run_live(callback.message, file_manager, settings, record, telegram_id)
     elif action == "dedup":
-        await _run_dedup(callback.message, file_manager, settings, record)
+        await _run_dedup(callback.message, file_manager, settings, record, telegram_id)
     elif action == "addfile":
-        await _run_addfile(callback.message, record)
+        await _run_addfile(callback.message, record, callback.from_user)
     elif action == "filter":
         await callback.message.answer(
             f"{Emoji.FIND} <b>Filter</b> — reply to the file with:\n"
@@ -579,7 +611,7 @@ async def on_card_action(
             "Choose how many parts:", reply_markup=split_choices(record.id)
         )
     elif action == "splitn" and count is not None:
-        await _run_split(callback.message, file_manager, settings, record, count)
+        await _run_split(callback.message, file_manager, settings, record, count, telegram_id)
     await callback.answer()
 
 

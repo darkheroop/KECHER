@@ -86,8 +86,21 @@ class Settings(BaseSettings):
     # How often the background sweep forwards pending files (hours).
     forward_interval_hours: int = 6
 
-    # --- Custom emoji ---
-    custom_emoji_ids: Annotated[dict[str, str], NoDecode] = Field(default_factory=dict)
+    # --- Custom emoji (premium). Overridable with CUSTOM_EMOJI_IDS JSON. ---
+    custom_emoji_ids: Annotated[dict[str, str], NoDecode] = Field(
+        default_factory=lambda: {
+            "ACCESS": "5267500801240092311",
+            "ACCOUNT": "5201914481671682382",
+            "BUTTON_MODE": "5271810272640643747",
+            "CLEAN": "5278491193053822590",
+            "SCRAPE": "5231012545799666522",
+            "LIVE_CHECK": "5375452661036358740",
+            "SPLIT": "5391199480022309848",
+            "SETTINGS": "6325680880689877024",
+            "MERGE": "5253539825360843975",
+            "ADMIN": "6325316263736250462",
+        }
+    )
 
     # ------------------------------------------------------------------ #
     # Validators / derived properties
