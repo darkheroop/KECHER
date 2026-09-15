@@ -134,6 +134,10 @@ def iter_lines(path: str | Path) -> Iterator[str]:
             yield raw.rstrip("\r\n")
 
 
+def count_lines(path: str | Path) -> int:
+    return sum(1 for _ in iter_lines(path))
+
+
 def _open_write(path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
     return open(path, "w", encoding=WRITE_ENCODING, newline="\n")

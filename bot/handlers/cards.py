@@ -35,8 +35,12 @@ from bot.handlers.common import (
     queue_snapshot,
     render_queue,
 )
+from bot.jobs.execution import run_with_progress
+from bot.jobs.progress import ProgressReporter, TelegramNotifier
+from bot.security.limits import human_size
 from bot.services.cards import (
     clean_cards,
+    count_lines,
     dedup_cards,
     filter_cards,
     live_cards,
@@ -165,6 +169,24 @@ def _tag(name: str) -> str:
     return f"{path.stem}{suffix}{path.suffix}" if path.suffix else f"{name}{suffix}"
 
 
+def _named(label: str, original: str) -> str:
+    """Name a result file after the operation, e.g. ``Cleaned - in.txt``."""
+    return f"{label} - {Path(original).stem}.txt"
+
+
+def _reporter(message: Message, status: Message) -> ProgressReporter:
+    return ProgressReporter(
+        TelegramNotifier(message.bot),
+        message.chat.id,
+        status.message_id,
+        min_interval=1.0,
+    )
+
+
+def _details(*lines: str) -> str:
+    return "\n".join(line for line in lines if line)
+
+
 async def _prompt_reply(message: Message, key: str) -> None:
     await message.answer(REPLY_PROMPT[key])
 
@@ -212,63 +234,132 @@ async def _run_clean(
     message: Message, files: FileManager, settings: Settings, record: UserFile, telegram_id: int
 ) -> None:
     src = _resolve(record, files, telegram_id)
-    out = files.allocate(telegram_id, f"{Path(record.safe_name).stem}_clean.txt", subdir="out")
-    status = await message.answer(f"{Emoji.CLEAN} Cleaning…")
-    report = await asyncio.to_thread(clean_cards, src, out.path)
+    total = count_lines(src)
+    status = await message.answer(
+        f"{Emoji.CLEAN} Cleaning <b>{total:,}</b> line(s)…"
+    )
+    out = files.allocate(telegram_id, _named("Cleaned", record.safe_name), subdir="out")
+    report = await run_with_progress(
+        clean_cards,
+        src,
+        out.path,
+        reporter=_reporter(message, status),
+        total=max(1, total),
+        label="Cleaning",
+    )
     stored = files.finalize(out)
     async with session_scope() as session:
         user_settings = await get_user_settings(session, record.user_id)
     await _register_output(record, files, stored, user_settings.cleanup_minutes)
     await safe_edit(
         status,
-        f"{Emoji.SUCCESS} <b>Clean complete</b>\n\n"
-        f"Total lines: {report.total:,}\n"
-        f"Valid cards: {report.valid:,}\n"
-        f"Removed: {report.invalid:,}",
+        _details(
+            f"{Emoji.SUCCESS} <b>Cleaning complete</b>",
+            "",
+            f"📄 Input: {total:,} line(s)",
+            f"✅ Valid: {report.valid:,}",
+            f"⛔ Removed: {report.invalid:,}",
+            f"💾 {stored.safe_name} · {human_size(stored.size_bytes)}",
+        ),
     )
-    await _send_file(message, stored.path, stored.safe_name, f"🧹 {report.valid:,} valid card(s)")
+    await _send_file(
+        message,
+        stored.path,
+        stored.safe_name,
+        _details(
+            f"🧹 Cleaned · {record.safe_name}",
+            f"✅ {report.valid:,} valid · ⛔ {report.invalid:,} removed",
+            f"📄 {report.valid:,} line(s) · 💾 {human_size(stored.size_bytes)}",
+        ),
+    )
 
 
 async def _run_live(
     message: Message, files: FileManager, settings: Settings, record: UserFile, telegram_id: int
 ) -> None:
     src = _resolve(record, files, telegram_id)
-    out = files.allocate(telegram_id, f"{Path(record.safe_name).stem}_live.txt", subdir="out")
-    status = await message.answer(f"{Emoji.LIVE_CHECK} Checking cards…")
-    report = await asyncio.to_thread(live_cards, src, out.path)
+    total = count_lines(src)
+    status = await message.answer(
+        f"{Emoji.LIVE_CHECK} Checking <b>{total:,}</b> line(s) with Luhn…"
+    )
+    out = files.allocate(telegram_id, _named("Luhn Valid", record.safe_name), subdir="out")
+    report = await run_with_progress(
+        live_cards,
+        src,
+        out.path,
+        reporter=_reporter(message, status),
+        total=max(1, total),
+        label="Checking",
+    )
     stored = files.finalize(out)
     async with session_scope() as session:
         user_settings = await get_user_settings(session, record.user_id)
     await _register_output(record, files, stored, user_settings.cleanup_minutes)
     await safe_edit(
         status,
-        f"{Emoji.SUCCESS} <b>Live check complete</b>\n\n"
-        f"Checked: {report.checked:,}\n"
-        f"Valid (Luhn): {report.valid:,}\n"
-        f"Invalid: {report.invalid:,}",
+        _details(
+            f"{Emoji.SUCCESS} <b>Luhn check complete</b>",
+            "",
+            f"📄 Checked: {report.checked:,}",
+            f"✅ Valid: {report.valid:,}",
+            f"❌ Invalid: {report.invalid:,}",
+            f"💾 {stored.safe_name} · {human_size(stored.size_bytes)}",
+        ),
     )
-    await _send_file(message, stored.path, stored.safe_name, f"🕵️ {report.valid:,} valid card(s)")
+    await _send_file(
+        message,
+        stored.path,
+        stored.safe_name,
+        _details(
+            f"🕵️ Luhn-valid · {record.safe_name}",
+            f"✅ {report.valid:,} valid · ❌ {report.invalid:,} invalid",
+            f"📄 {report.valid:,} line(s) · 💾 {human_size(stored.size_bytes)}",
+        ),
+    )
 
 
 async def _run_dedup(
     message: Message, files: FileManager, settings: Settings, record: UserFile, telegram_id: int
 ) -> None:
     src = _resolve(record, files, telegram_id)
-    out = files.allocate(telegram_id, f"{Path(record.safe_name).stem}_dedup.txt", subdir="out")
-    status = await message.answer(f"{Emoji.RECYCLE} Deduplicating…")
-    report = await asyncio.to_thread(dedup_cards, src, out.path)
+    total = count_lines(src)
+    status = await message.answer(
+        f"{Emoji.RECYCLE} Deduplicating <b>{total:,}</b> line(s)…"
+    )
+    out = files.allocate(telegram_id, _named("Deduped", record.safe_name), subdir="out")
+    report = await run_with_progress(
+        dedup_cards,
+        src,
+        out.path,
+        reporter=_reporter(message, status),
+        total=max(1, total),
+        label="Deduplicating",
+    )
     stored = files.finalize(out)
     async with session_scope() as session:
         user_settings = await get_user_settings(session, record.user_id)
     await _register_output(record, files, stored, user_settings.cleanup_minutes)
     await safe_edit(
         status,
-        f"{Emoji.SUCCESS} <b>Dedup complete</b>\n\n"
-        f"Lines: {report.total:,}\n"
-        f"Unique: {report.unique:,}\n"
-        f"Removed: {report.removed:,}",
+        _details(
+            f"{Emoji.SUCCESS} <b>Dedup complete</b>",
+            "",
+            f"📄 Input: {report.total:,} line(s)",
+            f"✅ Unique: {report.unique:,}",
+            f"🗑 Removed: {report.removed:,}",
+            f"💾 {stored.safe_name} · {human_size(stored.size_bytes)}",
+        ),
     )
-    await _send_file(message, stored.path, stored.safe_name, f"♻️ {report.unique:,} unique line(s)")
+    await _send_file(
+        message,
+        stored.path,
+        stored.safe_name,
+        _details(
+            f"♻️ Deduped · {record.safe_name}",
+            f"✅ {report.unique:,} unique · 🗑 {report.removed:,} removed",
+            f"📄 {report.unique:,} line(s) · 💾 {human_size(stored.size_bytes)}",
+        ),
+    )
 
 
 async def _run_addfile(message: Message, record: UserFile, tg_user) -> None:  # noqa: ANN001
@@ -331,24 +422,48 @@ async def _run_filter(
     telegram_id: int,
 ) -> None:
     src = _resolve(record, files, telegram_id)
-    safe = "".join(ch if ch.isalnum() else "_" for ch in value)[:40] or "filter"
-    out = files.allocate(telegram_id, f"{Path(record.safe_name).stem}_{safe}.txt", subdir="out")
-    label = "series" if mode == "prefix" else "keyword"
-    status = await message.answer(f"{Emoji.FIND} Filtering by {label} “{html.escape(value)}”…")
-    report = await asyncio.to_thread(filter_cards, src, out.path, value, mode=mode)
+    total = count_lines(src)
+    label = "Series" if mode == "prefix" else "Keyword"
+    status = await message.answer(
+        f"{Emoji.FIND} Filtering <b>{total:,}</b> line(s) by {label.lower()} "
+        f"“{html.escape(value)}”…"
+    )
+    out = files.allocate(telegram_id, _named(f"{label} {value}", record.safe_name), subdir="out")
+    report = await run_with_progress(
+        filter_cards,
+        src,
+        out.path,
+        value,
+        reporter=_reporter(message, status),
+        total=max(1, total),
+        label="Filtering",
+        mode=mode,
+    )
+    # filter_cards signature: (src, out, value, *, mode)
     stored = files.finalize(out)
     async with session_scope() as session:
         user_settings = await get_user_settings(session, record.user_id)
     await _register_output(record, files, stored, user_settings.cleanup_minutes)
     await safe_edit(
         status,
-        f"{Emoji.SUCCESS} <b>Filter complete</b>\n\n"
-        f"{label.title()}: <b>{html.escape(value)}</b>\n"
-        f"Matches: {report.matches:,}\n"
-        f"Card lines: {report.lines:,}",
+        _details(
+            f"{Emoji.SUCCESS} <b>Filter complete</b>",
+            "",
+            f"🎯 {label}: <b>{html.escape(value)}</b>",
+            f"📄 Matches: {report.matches:,}",
+            f"✅ Lines: {report.lines:,}",
+            f"💾 {stored.safe_name} · {human_size(stored.size_bytes)}",
+        ),
     )
     await _send_file(
-        message, stored.path, stored.safe_name, f"🎯 {report.lines:,} line(s) for “{value}”"
+        message,
+        stored.path,
+        stored.safe_name,
+        _details(
+            f"🎯 {label} “{value}” · {record.safe_name}",
+            f"✅ {report.lines:,} line(s) · 📄 {report.matches:,} match(es)",
+            f"💾 {human_size(stored.size_bytes)}",
+        ),
     )
 
 
@@ -407,27 +522,49 @@ async def _run_split(
     telegram_id: int,
 ) -> None:
     src = _resolve(record, files, telegram_id)
+    total = count_lines(src)
+    status = await message.answer(
+        f"{Emoji.SPLIT} Splitting <b>{total:,}</b> line(s) into <b>{count}</b> part(s)…"
+    )
     out_dir = files.user_root(telegram_id) / "out" / f"{Path(record.safe_name).stem}_parts"
-    status = await message.answer(f"{Emoji.SPLIT} Splitting into {count} parts…")
-    report = await asyncio.to_thread(split_cards, src, out_dir, count)
+    report = await run_with_progress(
+        split_cards,
+        src,
+        out_dir,
+        count,
+        reporter=_reporter(message, status),
+        total=max(1, total),
+        label="Splitting",
+    )
+    parts = report.parts
     await safe_edit(
         status,
-        f"{Emoji.SUCCESS} <b>Split complete</b>\n\n"
-        f"Parts: {len(report.parts):,}\n"
-        f"Total lines: {report.lines:,}",
+        _details(
+            f"{Emoji.SUCCESS} <b>Split complete</b>",
+            "",
+            f"✂️ Parts: {len(parts):,}",
+            f"📄 Lines: {report.lines:,}",
+        ),
     )
-    sent = 0
     forward = get_settings().forward_results and await _forwarding_enabled()
-    for part in report.parts:
-        if part.exists() and part.stat().st_size > 0:
-            delivered = await message.answer_document(
-                FSInputFile(part, filename=_tag(part.name))
+    sent = 0
+    for index, part in enumerate(parts, start=1):
+        if not part.exists() or part.stat().st_size == 0:
+            continue
+        lines = count_lines(part)
+        size = human_size(part.stat().st_size)
+        delivered = await message.answer_document(
+            FSInputFile(part, filename=_tag(f"Part {index} of {len(parts)}.txt")),
+            caption=_details(
+                f"✂️ Part {index} of {len(parts)} · {record.safe_name}",
+                f"📄 {lines:,} line(s) · 💾 {size}",
+            ),
+        )
+        if forward:
+            await forward_to_channel(
+                message.bot, get_settings(), delivered.chat.id, delivered.message_id
             )
-            if forward:
-                await forward_to_channel(
-                    message.bot, get_settings(), delivered.chat.id, delivered.message_id
-                )
-            sent += 1
+        sent += 1
     if sent == 0:
         await message.answer("ℹ️ The file had no lines to split.")
 
@@ -451,9 +588,19 @@ async def _run_merge(message: Message, files: FileManager, tg_user, telegram_id:
         return
 
     paths = [files.resolve(telegram_id, r.rel_path, create_parent=False) for r in records]
-    out = files.allocate(telegram_id, "merged.txt", subdir="out")
-    status = await message.answer(f"{Emoji.STAR} Merging {len(records)} file(s)…")
-    report = await asyncio.to_thread(merge_files, paths, out.path)
+    total = sum(count_lines(p) for p in paths if p.is_file())
+    out = files.allocate(telegram_id, "Merged.txt", subdir="out")
+    status = await message.answer(
+        f"{Emoji.STAR} Merging <b>{len(records)}</b> file(s) · <b>{total:,}</b> line(s)…"
+    )
+    report = await run_with_progress(
+        merge_files,
+        paths,
+        out.path,
+        reporter=_reporter(message, status),
+        total=max(1, total),
+        label="Merging",
+    )
     stored = files.finalize(out)
 
     async with session_scope() as session:
@@ -464,11 +611,23 @@ async def _run_merge(message: Message, files: FileManager, tg_user, telegram_id:
     await _register_output(records[0], files, stored, user_settings.cleanup_minutes)
     await safe_edit(
         status,
-        f"{Emoji.SUCCESS} <b>Merge complete</b>\n\n"
-        f"Files: {report.files:,}\n"
-        f"Lines: {report.lines:,}",
+        _details(
+            f"{Emoji.SUCCESS} <b>Merge complete</b>",
+            "",
+            f"📚 Files: {report.files:,}",
+            f"📄 Lines: {report.lines:,}",
+            f"💾 {stored.safe_name} · {human_size(stored.size_bytes)}",
+        ),
     )
-    await _send_file(message, stored.path, stored.safe_name, f"⭐ Merged {report.files} file(s)")
+    await _send_file(
+        message,
+        stored.path,
+        stored.safe_name,
+        _details(
+            f"⭐ Merged · {report.files:,} file(s)",
+            f"📄 {report.lines:,} line(s) · 💾 {human_size(stored.size_bytes)}",
+        ),
+    )
 
 
 @router.message(Command("clearqueue"))
