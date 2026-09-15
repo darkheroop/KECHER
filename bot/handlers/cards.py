@@ -253,24 +253,15 @@ async def _run_clean(
     await _register_output(record, files, stored, user_settings.cleanup_minutes)
     await safe_edit(
         status,
-        _details(
-            f"{Emoji.SUCCESS} <b>Cleaning complete</b>",
-            "",
-            f"📄 Input: {total:,} line(s)",
-            f"✅ Valid: {report.valid:,}",
-            f"⛔ Removed: {report.invalid:,}",
-            f"💾 {stored.safe_name} · {human_size(stored.size_bytes)}",
-        ),
+        f"{Emoji.SUCCESS} <b>Cleaned</b> · {report.valid:,} valid · "
+        f"{report.invalid:,} removed · {human_size(stored.size_bytes)}",
     )
     await _send_file(
         message,
         stored.path,
         stored.safe_name,
-        _details(
-            f"🧹 Cleaned · {record.safe_name}",
-            f"✅ {report.valid:,} valid · ⛔ {report.invalid:,} removed",
-            f"📄 {report.valid:,} line(s) · 💾 {human_size(stored.size_bytes)}",
-        ),
+        f"🧹 {record.safe_name}\n{report.valid:,} valid · {report.invalid:,} removed · "
+        f"{human_size(stored.size_bytes)}",
     )
 
 
@@ -297,24 +288,15 @@ async def _run_live(
     await _register_output(record, files, stored, user_settings.cleanup_minutes)
     await safe_edit(
         status,
-        _details(
-            f"{Emoji.SUCCESS} <b>Luhn check complete</b>",
-            "",
-            f"📄 Checked: {report.checked:,}",
-            f"✅ Valid: {report.valid:,}",
-            f"❌ Invalid: {report.invalid:,}",
-            f"💾 {stored.safe_name} · {human_size(stored.size_bytes)}",
-        ),
+        f"{Emoji.SUCCESS} <b>Luhn check</b> · {report.valid:,} valid · "
+        f"{report.invalid:,} invalid · {human_size(stored.size_bytes)}",
     )
     await _send_file(
         message,
         stored.path,
         stored.safe_name,
-        _details(
-            f"🕵️ Luhn-valid · {record.safe_name}",
-            f"✅ {report.valid:,} valid · ❌ {report.invalid:,} invalid",
-            f"📄 {report.valid:,} line(s) · 💾 {human_size(stored.size_bytes)}",
-        ),
+        f"🕵️ {record.safe_name}\n{report.valid:,} valid · {report.invalid:,} invalid · "
+        f"{human_size(stored.size_bytes)}",
     )
 
 
@@ -341,24 +323,15 @@ async def _run_dedup(
     await _register_output(record, files, stored, user_settings.cleanup_minutes)
     await safe_edit(
         status,
-        _details(
-            f"{Emoji.SUCCESS} <b>Dedup complete</b>",
-            "",
-            f"📄 Input: {report.total:,} line(s)",
-            f"✅ Unique: {report.unique:,}",
-            f"🗑 Removed: {report.removed:,}",
-            f"💾 {stored.safe_name} · {human_size(stored.size_bytes)}",
-        ),
+        f"{Emoji.SUCCESS} <b>Deduped</b> · {report.unique:,} unique · "
+        f"{report.removed:,} removed · {human_size(stored.size_bytes)}",
     )
     await _send_file(
         message,
         stored.path,
         stored.safe_name,
-        _details(
-            f"♻️ Deduped · {record.safe_name}",
-            f"✅ {report.unique:,} unique · 🗑 {report.removed:,} removed",
-            f"📄 {report.unique:,} line(s) · 💾 {human_size(stored.size_bytes)}",
-        ),
+        f"♻️ {record.safe_name}\n{report.unique:,} unique · {report.removed:,} removed · "
+        f"{human_size(stored.size_bytes)}",
     )
 
 
@@ -446,24 +419,15 @@ async def _run_filter(
     await _register_output(record, files, stored, user_settings.cleanup_minutes)
     await safe_edit(
         status,
-        _details(
-            f"{Emoji.SUCCESS} <b>Filter complete</b>",
-            "",
-            f"🎯 {label}: <b>{html.escape(value)}</b>",
-            f"📄 Matches: {report.matches:,}",
-            f"✅ Lines: {report.lines:,}",
-            f"💾 {stored.safe_name} · {human_size(stored.size_bytes)}",
-        ),
+        f"{Emoji.SUCCESS} <b>{label} “{html.escape(value)}”</b> · "
+        f"{report.lines:,} line(s) · {human_size(stored.size_bytes)}",
     )
     await _send_file(
         message,
         stored.path,
         stored.safe_name,
-        _details(
-            f"🎯 {label} “{value}” · {record.safe_name}",
-            f"✅ {report.lines:,} line(s) · 📄 {report.matches:,} match(es)",
-            f"💾 {human_size(stored.size_bytes)}",
-        ),
+        f"🎯 {record.safe_name}\n{label} “{value}” · {report.lines:,} line(s) · "
+        f"{human_size(stored.size_bytes)}",
     )
 
 
@@ -539,12 +503,7 @@ async def _run_split(
     parts = report.parts
     await safe_edit(
         status,
-        _details(
-            f"{Emoji.SUCCESS} <b>Split complete</b>",
-            "",
-            f"✂️ Parts: {len(parts):,}",
-            f"📄 Lines: {report.lines:,}",
-        ),
+        f"{Emoji.SUCCESS} <b>Split</b> · {len(parts):,} parts · {report.lines:,} lines",
     )
     forward = get_settings().forward_results and await _forwarding_enabled()
     sent = 0
@@ -555,10 +514,7 @@ async def _run_split(
         size = human_size(part.stat().st_size)
         delivered = await message.answer_document(
             FSInputFile(part, filename=_tag(f"Part {index} of {len(parts)}.txt")),
-            caption=_details(
-                f"✂️ Part {index} of {len(parts)} · {record.safe_name}",
-                f"📄 {lines:,} line(s) · 💾 {size}",
-            ),
+            caption=f"✂️ Part {index} of {len(parts)} · {lines:,} lines · {size}",
         )
         if forward:
             await forward_to_channel(
@@ -611,22 +567,14 @@ async def _run_merge(message: Message, files: FileManager, tg_user, telegram_id:
     await _register_output(records[0], files, stored, user_settings.cleanup_minutes)
     await safe_edit(
         status,
-        _details(
-            f"{Emoji.SUCCESS} <b>Merge complete</b>",
-            "",
-            f"📚 Files: {report.files:,}",
-            f"📄 Lines: {report.lines:,}",
-            f"💾 {stored.safe_name} · {human_size(stored.size_bytes)}",
-        ),
+        f"{Emoji.SUCCESS} <b>Merged</b> · {report.files:,} files · "
+        f"{report.lines:,} lines · {human_size(stored.size_bytes)}",
     )
     await _send_file(
         message,
         stored.path,
         stored.safe_name,
-        _details(
-            f"⭐ Merged · {report.files:,} file(s)",
-            f"📄 {report.lines:,} line(s) · 💾 {human_size(stored.size_bytes)}",
-        ),
+        f"⭐ {report.files:,} file(s)\n{report.lines:,} lines · {human_size(stored.size_bytes)}",
     )
 
 

@@ -23,30 +23,29 @@ from bot.ui.render import safe_edit
 router = Router(name="menu")
 
 HEADER = f"{Emoji.CARD} <b>Card File Bot</b>"
+DIVIDER = "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄"
 
 HELP_TEXT = (
-    f"{HEADER}\n"
-    "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
-    "<b>Reply to a .txt file with:</b>\n\n"
-    f"{Emoji.CLEAN} <code>/clean</code> — keep valid card records "
-    "(<code>serial|date|time|invited</code>)\n"
-    f"{Emoji.LIVE_CHECK} <code>/live</code> — keep serials that pass the Luhn check\n"
-    f"{Emoji.FIND} <code>/filter 123456</code> — all serials starting with a series\n"
-    f"{Emoji.FIND} <code>/filter canada</code> — card lines above a keyword\n"
-    f"{Emoji.SPLIT} <code>/split N</code> — split into N equal parts\n"
-    f"{Emoji.RECYCLE} <code>/dedup</code> — remove duplicate lines\n\n"
-    f"{Emoji.PAGE} <code>/addfile</code> then {Emoji.STAR} <code>/merge</code> — combine files\n"
-    f"{Emoji.SETTINGS} <code>/settings</code> — button / text mode\n"
+    f"{HEADER}\n{DIVIDER}\n"
+    "<b>Reply to a .txt</b>\n"
+    f"{Emoji.CLEAN} <code>/clean</code>  valid records\n"
+    f"{Emoji.LIVE_CHECK} <code>/live</code>  Luhn-valid\n"
+    f"{Emoji.FIND} <code>/filter 123456</code>  a series\n"
+    f"{Emoji.FIND} <code>/filter canada</code>  a keyword\n"
+    f"{Emoji.SPLIT} <code>/split N</code>   {Emoji.RECYCLE} <code>/dedup</code>\n"
+    f"{Emoji.PAGE} <code>/addfile</code> → {Emoji.STAR} <code>/merge</code>\n\n"
+    f"{Emoji.SETTINGS} <code>/settings</code>   {Emoji.ADMIN} <code>/admin</code>\n\n"
+    f"<i>Record:</i> <code>serial|date|time|count</code>"
 )
 
 MENU_INSTRUCTIONS = {
-    "clean": "Reply to a .txt file with <code>/clean</code>.",
-    "live": "Reply to a .txt file with <code>/live</code>.",
-    "dedup": "Reply to a .txt file with <code>/dedup</code>.",
-    "addfile": "Reply to a .txt file with <code>/addfile</code>.",
-    "filter": "Reply to a .txt file with <code>/filter &lt;keyword&gt;</code>.",
-    "findbin": "Reply to a .txt file with <code>/findbin &lt;digits&gt;</code>.",
-    "split": "Reply to a .txt file with <code>/split N</code>.",
+    "clean": "Reply to a .txt with <code>/clean</code>.",
+    "live": "Reply to a .txt with <code>/live</code>.",
+    "dedup": "Reply to a .txt with <code>/dedup</code>.",
+    "addfile": "Reply to a .txt with <code>/addfile</code>.",
+    "filter": "Reply to a .txt with <code>/filter &lt;keyword&gt;</code>.",
+    "findbin": "Reply to a .txt with <code>/findbin &lt;digits&gt;</code>.",
+    "split": "Reply to a .txt with <code>/split N</code>.",
 }
 
 COMING_SOON = {
@@ -56,31 +55,26 @@ COMING_SOON = {
 
 def welcome_text() -> str:
     return (
-        f"{HEADER}\n"
-        "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
-        "Organise, validate and extract card serial records.\n\n"
-        f"{Emoji.PAGE} Send a <b>.txt</b> file, or reply to one with a command.\n"
-        f"{Emoji.HELP} /help for the full guide."
+        f"{HEADER}\n{DIVIDER}\n"
+        "Send a <b>.txt</b> — or reply to one with a command.\n\n"
+        f"{Emoji.HELP} /help    {Emoji.SETTINGS} /settings"
     )
 
 
 def onboarding_text(name: str | None) -> str:
     who = f", <b>{html.escape(name)}</b>" if name else ""
     return (
-        f"{HEADER}\n"
-        "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
-        f"Welcome{who}! Here's how it works in 20 seconds 👇\n\n"
-        f"{Emoji.PAGE} <b>1 · Send a .txt</b> — or reply to one you already sent.\n\n"
-        f"{Emoji.CLEAN} <b>2 · Run a command</b>\n"
-        f"   <code>/clean</code> — extract valid records\n"
-        f"   <code>/live</code> — keep Luhn-valid records\n"
-        f"   <code>/filter 123456</code> — every serial of a series\n"
-        f"   <code>/filter canada</code> — lines above a keyword\n"
-        f"   <code>/split 5</code> · <code>/dedup</code> · <code>/addfile</code>+<code>/merge</code>\n\n"
-        f"{Emoji.KEY} <b>3 · Access</b> — a key is required.\n"
-        "   Redeem one with <code>/redeem YOUR-KEY</code>, or ask with /request.\n\n"
-        f"{Emoji.CARD} Record: <code>serial|date|time|count</code>\n"
-        "   e.g. <code>1234567891234567|02|2028|555</code>"
+        f"{HEADER}\n{DIVIDER}\n"
+        f"Welcome{who} 👋\n\n"
+        f"{Emoji.PAGE} Send a <b>.txt</b> (or reply to one), then:\n\n"
+        f"{Emoji.CLEAN} <code>/clean</code> — valid records\n"
+        f"{Emoji.LIVE_CHECK} <code>/live</code> — Luhn-valid\n"
+        f"{Emoji.FIND} <code>/filter 123456</code> — a series\n"
+        f"{Emoji.FIND} <code>/filter canada</code> — a keyword\n"
+        f"{Emoji.SPLIT} <code>/split 5</code>   {Emoji.RECYCLE} <code>/dedup</code>\n"
+        f"{Emoji.PAGE} <code>/addfile</code> → {Emoji.STAR} <code>/merge</code>\n\n"
+        f"{Emoji.KEY} <code>/redeem KEY</code> or /request\n"
+        f"<i>Record:</i> <code>serial|date|time|count</code>"
     )
 
 
