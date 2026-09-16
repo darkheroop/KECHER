@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime
@@ -48,6 +49,7 @@ class ScrapeOptions:
     exclude: list[str] | None = None  # drop messages containing any of these
     sender: str | None = None  # numeric sender id filter
     min_length: int = 0  # minimum text length
+    keyword_mode: str = "contains"  # contains | word | regex
     types: set[str] | None = None  # e.g. {"text"} or {"photo", "document"}
     include_media: bool = False
     text_only: bool = True  # plain-text output (no [date] prefix) for cleaning
@@ -66,6 +68,29 @@ class ScrapeResult:
     path: Path | None = None
 
 
+def keywords_match(text: str, words: list[str], mode: str = "contains") -> bool:
+    """Return True if any keyword matches ``text`` (case-insensitive)."""
+    if not words:
+        return True
+    haystack = text or ""
+    if mode == "regex":
+        for word in words:
+            try:
+                if re.search(word, haystack, re.IGNORECASE):
+                    return True
+            except re.error:
+                continue
+        return False
+    if mode == "word":
+        lowered = haystack.casefold()
+        return any(
+            re.search(rf"(?<!\w){re.escape(word.casefold())}(?!\w)", lowered)
+            for word in words
+        )
+    lowered = haystack.casefold()
+    return any(word.casefold() in lowered for word in words)
+
+
 def message_matches(datum: MessageDatum, options: ScrapeOptions) -> bool:
     """Apply the date / type / keyword / sender / length filters."""
     if options.date_from is not None and datum.date < options.date_from:
@@ -74,11 +99,8 @@ def message_matches(datum: MessageDatum, options: ScrapeOptions) -> bool:
         return False
 
     text = datum.text or ""
-    words = options.all_keywords()
-    if words:
-        haystack = text.casefold()
-        if not any(word.casefold() in haystack for word in words):
-            return False
+    if not keywords_match(text, options.all_keywords(), options.keyword_mode):
+        return False
 
     if options.exclude:
         haystack = text.casefold()

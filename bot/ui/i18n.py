@@ -10,6 +10,7 @@ SUPPORTED = {"en": "English", "hi-en": "Hinglish"}
 STRINGS: dict[str, dict[str, str]] = {
     "en": {
         "tagline": "Extract, validate & organise card serial files.",
+        "developer": "Developer: @{name} — contact for any issue.",
         "welcome": (
             "Send a **.txt** — or reply to one with a command.\n\n"
             "/help   /settings"
@@ -43,6 +44,7 @@ STRINGS: dict[str, dict[str, str]] = {
     },
     "hi-en": {
         "tagline": "Card serial files ko extract, validate aur organise karo.",
+        "developer": "Developer: @{name} — kisi bhi issue ke liye contact karo.",
         "welcome": (
             "Ek **.txt** bhejo — ya kisi msg pe reply karke command do.\n\n"
             "/help   /settings"

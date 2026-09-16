@@ -127,6 +127,31 @@ class TelethonScraper:
     def accounts_for(self, owner: int) -> list:
         return self._registry.accounts_for(owner)
 
+    def all_accounts(self) -> list:
+        """Every account on the server (for admin/manager control)."""
+        return self._registry.load()
+
+    def _acting_key(self, owner: int) -> str:
+        return f"acting_account:{owner}"
+
+    async def acting_label(self, owner: int) -> str | None:
+        """An account chosen by an admin to scrape on behalf of another owner."""
+        try:
+            async with session_scope() as session:
+                label = await get_bot_setting(session, self._acting_key(owner))
+        except Exception:  # noqa: BLE001
+            return None
+        if label and self._registry.get(label) is not None:
+            return label
+        return None
+
+    async def set_acting(self, owner: int, label: str) -> None:
+        async with session_scope() as session:
+            await set_bot_setting(session, self._acting_key(owner), label)
+
+    async def clear_acting(self, owner: int) -> None:
+        await self.set_acting(owner, "")
+
     def user_account(self, owner: int):  # noqa: ANN201
         accounts = self._registry.accounts_for(owner)
         return accounts[0] if accounts else None

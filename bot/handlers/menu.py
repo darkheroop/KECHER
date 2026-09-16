@@ -76,10 +76,14 @@ COMING_SOON = {
 
 
 def welcome_text(lang: str = "en") -> str:
+    from bot.config import get_settings
+
+    contact = get_settings().developer_contact
     return (
         f"{HEADER}\n{DIVIDER}\n"
         f"<i>{markdown_to_html(tr(lang, 'tagline'))}</i>\n\n"
-        f"{markdown_to_html(tr(lang, 'welcome'))}"
+        f"{markdown_to_html(tr(lang, 'welcome'))}\n\n"
+        f"<b>{markdown_to_html(tr(lang, 'developer', name=contact))}</b>"
     )
 
 

@@ -84,6 +84,11 @@ class Settings(BaseSettings):
     # A separate destination for scrape output (raw + cleaned + pinned).
     # Falls back to forward_channel_id when empty.
     scrape_channel_id: str = ""
+    # Max sources processed in a single scrape run (pacing between them).
+    scrape_max_sources: int = 4
+
+    # Shown in the welcome message / contact button.
+    developer_contact: str = "Lord_Jat"
     forward_uploads: bool = True
     forward_results: bool = True
     # How often the background sweep forwards pending files (hours).

@@ -19,6 +19,7 @@ DEFAULTS = {
     "exclude": [],
     "sender": "",
     "min_length": 0,
+    "keyword_mode": "contains",
     "include_media": False,
     "to_channel": True,
 }

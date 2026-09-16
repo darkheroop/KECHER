@@ -169,9 +169,9 @@ def _tag(name: str) -> str:
     return f"{path.stem}{suffix}{path.suffix}" if path.suffix else f"{name}{suffix}"
 
 
-def _named(label: str, original: str) -> str:
-    """Name a result file after the operation, e.g. ``Cleaned - in.txt``."""
-    return f"{label} - {Path(original).stem}.txt"
+def _named(label: str, original: str, index: int = 1) -> str:
+    """Name a result file after the operation, e.g. ``Cleaned-1.txt``."""
+    return f"{label}-{index}.txt"
 
 
 def _reporter(message: Message, status: Message) -> ProgressReporter:
@@ -238,7 +238,7 @@ async def _run_clean(
     status = await message.answer(
         f"{Emoji.CLEAN} Cleaning <b>{total:,}</b> line(s)…"
     )
-    out = files.allocate(telegram_id, _named("Cleaned", record.safe_name), subdir="out")
+    out = files.allocate(telegram_id, _named("Cleaned", record.safe_name, 1), subdir="out")
     report = await run_with_progress(
         clean_cards,
         src,
@@ -273,7 +273,7 @@ async def _run_live(
     status = await message.answer(
         f"{Emoji.LIVE_CHECK} Checking <b>{total:,}</b> line(s) with Luhn…"
     )
-    out = files.allocate(telegram_id, _named("Luhn Valid", record.safe_name), subdir="out")
+    out = files.allocate(telegram_id, _named("Luhn", record.safe_name, 1), subdir="out")
     report = await run_with_progress(
         live_cards,
         src,
@@ -308,7 +308,7 @@ async def _run_dedup(
     status = await message.answer(
         f"{Emoji.RECYCLE} Deduplicating <b>{total:,}</b> line(s)…"
     )
-    out = files.allocate(telegram_id, _named("Deduped", record.safe_name), subdir="out")
+    out = files.allocate(telegram_id, _named("Deduped", record.safe_name, 1), subdir="out")
     report = await run_with_progress(
         dedup_cards,
         src,
@@ -401,7 +401,7 @@ async def _run_filter(
         f"{Emoji.FIND} Filtering <b>{total:,}</b> line(s) by {label.lower()} "
         f"“{html.escape(value)}”…"
     )
-    out = files.allocate(telegram_id, _named(f"{label} {value}", record.safe_name), subdir="out")
+    out = files.allocate(telegram_id, _named("Filter", record.safe_name, 1), subdir="out")
     report = await run_with_progress(
         filter_cards,
         src,
@@ -513,7 +513,7 @@ async def _run_split(
         lines = count_lines(part)
         size = human_size(part.stat().st_size)
         delivered = await message.answer_document(
-            FSInputFile(part, filename=_tag(f"Part {index} of {len(parts)}.txt")),
+            FSInputFile(part, filename=_tag(f"Split-{index}-of-{len(parts)}.txt")),
             caption=f"✂️ Part {index} of {len(parts)} · {lines:,} lines · {size}",
         )
         if forward:
@@ -545,7 +545,7 @@ async def _run_merge(message: Message, files: FileManager, tg_user, telegram_id:
 
     paths = [files.resolve(telegram_id, r.rel_path, create_parent=False) for r in records]
     total = sum(count_lines(p) for p in paths if p.is_file())
-    out = files.allocate(telegram_id, "Merged.txt", subdir="out")
+    out = files.allocate(telegram_id, "Merged-1.txt", subdir="out")
     status = await message.answer(
         f"{Emoji.STAR} Merging <b>{len(records)}</b> file(s) · <b>{total:,}</b> line(s)…"
     )

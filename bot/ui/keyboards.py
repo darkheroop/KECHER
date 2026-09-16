@@ -17,16 +17,22 @@ def _mark(label: str, active: bool) -> str:
 
 def main_menu() -> InlineKeyboardMarkup:
     """Clean 2-column grid; admin tools live under Settings."""
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [_btn(f"{Emoji.SCRAPE} Scrape", "menu:scrape"), _btn(f"{Emoji.CLEAN} Clean", "menu:clean")],
-            [_btn(f"{Emoji.LIVE_CHECK} Live Check", "menu:live"), _btn(f"{Emoji.COUNTRY} Country", "menu:filter")],
-            [_btn(f"{Emoji.SPLIT} Split", "menu:split"), _btn(f"{Emoji.RECYCLE} Dedup", "menu:dedup")],
-            [_btn(f"{Emoji.PAGE} Add File", "menu:addfile"), _btn(f"{Emoji.MERGE} Merge", "menu:merge")],
-            [_btn(f"{Emoji.FIND} Find BIN", "menu:findbin")],
-            [_btn(f"{Emoji.SETTINGS} Settings", "settings:open")],
-        ]
-    )
+    from bot.config import get_settings
+
+    contact = (get_settings().developer_contact or "").strip().lstrip("@")
+    rows = [
+        [_btn(f"{Emoji.SCRAPE} Scrape", "menu:scrape"), _btn(f"{Emoji.CLEAN} Clean", "menu:clean")],
+        [_btn(f"{Emoji.LIVE_CHECK} Live Check", "menu:live"), _btn(f"{Emoji.COUNTRY} Country", "menu:filter")],
+        [_btn(f"{Emoji.SPLIT} Split", "menu:split"), _btn(f"{Emoji.RECYCLE} Dedup", "menu:dedup")],
+        [_btn(f"{Emoji.PAGE} Add File", "menu:addfile"), _btn(f"{Emoji.MERGE} Merge", "menu:merge")],
+        [_btn(f"{Emoji.FIND} Find BIN", "menu:findbin")],
+        [_btn(f"{Emoji.SETTINGS} Settings", "settings:open")],
+    ]
+    if contact:
+        rows.append(
+            [InlineKeyboardButton(text="💬 Developer", url=f"https://t.me/{contact}")]
+        )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def settings_menu(
@@ -93,17 +99,15 @@ def scrape_panel(state: dict) -> InlineKeyboardMarkup:
 
     kw_label = ", ".join(keywords) if keywords else "any"
     ex_label = ", ".join(exclude) if exclude else "none"
+    kmode = state.get("keyword_mode", "contains")
 
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [_btn(f"{Emoji.FIND} Keywords: {kw_label}"[:60], "scr:kw")],
             [
-                _btn(f"🚫 Exclude: {ex_label}"[:34], "scr:exclude"),
-                _btn(f"👤 Sender: {sender}"[:24], "scr:sender"),
-            ],
-            [
-                _btn(f"📏 Min len: {minlen}"[:24], "scr:minlen"),
-                _btn(_mark("Media", media), "scr:media"),
+                _btn(_mark("contains", kmode == "contains"), "scr:kmode:contains"),
+                _btn(_mark("word", kmode == "word"), "scr:kmode:word"),
+                _btn(_mark("regex", kmode == "regex"), "scr:kmode:regex"),
             ],
             [
                 _btn(_mark("100", limit == 100), "scr:limit:100"),
@@ -118,13 +122,25 @@ def scrape_panel(state: dict) -> InlineKeyboardMarkup:
             ],
             [
                 _btn(_mark("Auto-clean", autoclean), "scr:autoclean"),
+                _btn(_mark("Media", media), "scr:media"),
+                _btn(_mark(f"{Emoji.INBOX} Channel", to_channel), "scr:chan"),
+            ],
+            [
                 _btn(_mark("All time", dates == "none"), "scr:dates:none"),
                 _btn(_mark("7d", dates == "7"), "scr:dates:7"),
                 _btn(_mark("30d", dates == "30"), "scr:dates:30"),
-                _btn("Custom", "scr:dates:custom"),
+                _btn(_mark("90d", dates == "90"), "scr:dates:90"),
             ],
             [
-                _btn(_mark(f"📡 {Emoji.INBOX} Channel", to_channel), "scr:chan"),
+                _btn("🗓 Custom range", "scr:dates:custom"),
+                _btn("🧹 Clear dates", "scr:dates:clear"),
+            ],
+            [
+                _btn(f"🚫 Exclude: {ex_label}"[:34], "scr:exclude"),
+                _btn(f"👤 Sender: {sender}"[:24], "scr:sender"),
+            ],
+            [
+                _btn(f"📏 Min length: {minlen}"[:28], "scr:minlen"),
                 _btn(f"{Emoji.SETTINGS} Defaults", "scr:defaults"),
             ],
             [_btn(f"{Emoji.SCRAPE} Run scrape", "scr:run")],
@@ -176,6 +192,27 @@ def scrape_sources(
         )
     rows.append([_btn(f"{Emoji.BACK} Back", "menu:home")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def all_accounts_menu(accounts: list[tuple[str, str, str]]) -> InlineKeyboardMarkup:
+    """Rows: (owner, label, status). Admin picks one to act as."""
+    rows = []
+    for owner, label, status in accounts:
+        rows.append(
+            [_btn(f"👤 {label} · {status} · owner {owner}"[:60], f"adm:useacct:{label}")]
+        )
+    rows.append([_btn("↩️ Use my own account", "adm:useacct:__self__")])
+    rows.append([_btn(f"{Emoji.BACK} Back", "adm:panel:home")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def broadcast_confirm() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_btn("✅ Send broadcast", "adm:bc:send")],
+            [_btn(f"{Emoji.CANCEL} Cancel", "adm:bc:cancel")],
+        ]
+    )
 
 
 def defaults_menu() -> InlineKeyboardMarkup:
@@ -239,6 +276,11 @@ def admin_panel(forward_on: bool, access_on: bool) -> InlineKeyboardMarkup:
                 _btn("📨 Scrape channel", "adm:panel:schan"),
             ],
             [_btn("🔐 Telegram API credentials", "adm:panel:api")],
+            [_btn("👥 All accounts", "adm:accts")],
+            [
+                _btn("📣 Broadcast", "adm:bcast"),
+                _btn(f"{Emoji.STATS} Health", "adm:health"),
+            ],
             [
                 _btn("🔑 Gen 5 × 1d", "adm:panel:gen:5:1"),
                 _btn("🔑 Gen 10 × 7d", "adm:panel:gen:10:7"),

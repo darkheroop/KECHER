@@ -61,10 +61,17 @@ from bot.services.keys import (
 from bot.services.forwarder import forward_pending_files
 from bot.ui.commands import set_admin_commands, set_public_commands_for
 from bot.ui.emoji import Emoji
-from bot.ui.keyboards import admin_panel, back_to_menu
+from bot.ui.keyboards import (
+    admin_panel,
+    all_accounts_menu,
+    back_to_menu,
+    broadcast_confirm,
+)
 from bot.ui.render import safe_edit
 
 router = Router(name="keys")
+
+DIVIDER = "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄"
 
 MAX_GEN = 10000
 KEYS_PER_MESSAGE = 25
@@ -1099,3 +1106,162 @@ async def cmd_stats(message: Message, settings: Settings) -> None:
         f"{Emoji.KEY} Keys: {keys:,}\n"
         f"{Emoji.FILE} Files: {files:,}"
     )
+
+# --------------------------------------------------------------------------- #
+# Manager tools: all accounts, broadcast, health
+# --------------------------------------------------------------------------- #
+@router.callback_query(F.data == "adm:accts")
+async def adm_accounts(callback: CallbackQuery, settings: Settings, scraper) -> None:  # noqa: ANN001
+    if not await _require_admin_cb(callback, settings):
+        return
+    accounts = scraper.all_accounts() if scraper else []
+    if not accounts:
+        await safe_edit(callback.message, "No accounts on the server yet.", reply_markup=_panel_back())
+        await callback.answer()
+        return
+    rows = [
+        (str(a.owner or "?"), a.label, scraper.registry.status(a)) for a in accounts
+    ]
+    await safe_edit(
+        callback.message,
+        f"{Emoji.ACCOUNT} <b>All accounts</b>\nTap one to scrape as that account.",
+        reply_markup=all_accounts_menu(rows),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("adm:useacct:"))
+async def adm_use_account(callback: CallbackQuery, settings: Settings, scraper) -> None:  # noqa: ANN001
+    if not await _require_admin_cb(callback, settings):
+        return
+    label = (callback.data or "").split(":", 2)[2]
+    if label == "__self__" or not label:
+        await scraper.clear_acting(callback.from_user.id)
+        note = "Now using your own active account."
+    else:
+        await scraper.set_acting(callback.from_user.id, label)
+        note = f"Now scraping as <b>{html.escape(label)}</b>."
+    text, keyboard = await _panel_view(settings)
+    await safe_edit(callback.message, f"{Emoji.SUCCESS} {note}", reply_markup=keyboard)
+    await callback.answer("Saved")
+
+
+@router.callback_query(F.data == "adm:bcast")
+async def adm_broadcast(callback: CallbackQuery, settings: Settings, state: FSMContext) -> None:
+    if not await _require_admin_cb(callback, settings):
+        return
+    await state.set_state(Flow.awaiting_broadcast)
+    await safe_edit(callback.message, "Send the broadcast text (it will be previewed first).")
+    await callback.answer()
+
+
+@router.message(Command("broadcast"))
+async def cmd_broadcast(message: Message, settings: Settings, state: FSMContext) -> None:
+    tg_user = message.from_user
+    assert tg_user is not None
+    async with session_scope() as session:
+        user = await ensure_user(session, tg_user)
+        if not await _require_admin(message, session, user, settings):
+            return
+    await state.set_state(Flow.awaiting_broadcast)
+    await message.answer("Send the broadcast text (it will be previewed first).")
+
+
+@router.message(Flow.awaiting_broadcast)
+async def on_broadcast_text(message: Message, settings: Settings, state: FSMContext) -> None:
+    tg_user = message.from_user
+    assert tg_user is not None
+    async with session_scope() as session:
+        user = await ensure_user(session, tg_user)
+        if not is_admin(user, settings):
+            await state.clear()
+            return
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer("Send some text.")
+        return
+    await state.update_data(broadcast=text)
+    who = html.escape(tg_user.first_name or "admin")
+    await message.answer(
+        f"<b>Broadcast preview</b>\n{DIVIDER}\n{html.escape(text)}\n\n- {who}\n\nSend it?",
+        reply_markup=broadcast_confirm(),
+    )
+
+
+@router.callback_query(F.data == "adm:bc:cancel")
+async def adm_bc_cancel(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await safe_edit(callback.message, f"{Emoji.CANCEL} Broadcast cancelled.", reply_markup=_panel_back())
+    await callback.answer()
+
+
+@router.callback_query(F.data == "adm:bc:send")
+async def adm_bc_send(callback: CallbackQuery, settings: Settings, state: FSMContext) -> None:
+    if not await _require_admin_cb(callback, settings):
+        return
+    data = await state.get_data()
+    text = data.get("broadcast")
+    await state.clear()
+    if not text:
+        await callback.answer("Nothing to send.", show_alert=True)
+        return
+    who = html.escape(callback.from_user.first_name or "admin")
+    upper = (callback.from_user.username or "").lstrip("@")
+    signature = f"- {who}" + (f" (@{upper})" if upper else "")
+    async with session_scope() as session:
+        users = await list_users(session, limit=100000)
+    sent = failed = 0
+    status = await callback.message.answer("Sending broadcast...")
+    for user in users:
+        try:
+            await callback.bot.send_message(user.telegram_id, f"{text}\n\n{signature}")
+            sent += 1
+        except Exception:  # noqa: BLE001
+            failed += 1
+    await safe_edit(
+        status,
+        f"{Emoji.SUCCESS} <b>Broadcast sent</b>\nDelivered: <b>{sent:,}</b>\nFailed: <b>{failed:,}</b>",
+        reply_markup=_panel_back(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "adm:health")
+async def adm_health(callback: CallbackQuery, settings: Settings, scraper) -> None:  # noqa: ANN001
+    if not await _require_admin_cb(callback, settings):
+        return
+    from sqlalchemy import text as _sql
+
+    revision = "unknown"
+    tables = 0
+    try:
+        async with session_scope() as session:
+            row = await session.execute(_sql("select version_num from alembic_version"))
+            revision = row.scalar() or "none"
+            names = await session.execute(
+                _sql("select count(*) from information_schema.tables where table_schema='public'")
+            )
+            tables = names.scalar() or 0
+    except Exception:  # noqa: BLE001
+        try:
+            async with session_scope() as session:
+                names = await session.execute(
+                    _sql("select count(*) from sqlite_master where type='table'")
+                )
+                tables = names.scalar() or 0
+        except Exception:  # noqa: BLE001
+            tables = 0
+    accounts = len(scraper.all_accounts()) if scraper else 0
+    await safe_edit(
+        callback.message,
+        f"{Emoji.STATS} <b>Health</b>\n{DIVIDER}\n"
+        f"Env: <b>{html.escape(settings.environment)}</b>\n"
+        f"Migrations: <b>{html.escape(str(revision))}</b>\n"
+        f"Tables: <b>{tables}</b>\n"
+        f"Telegram API: <b>{'set' if creds.is_configured(settings) else 'missing'}</b>\n"
+        f"Channel 1: <code>{html.escape(settings.forward_channel_id or '-')}</code>\n"
+        f"Channel 2: <code>{html.escape(settings.scrape_channel_id or '-')}</code>\n"
+        f"Accounts: <b>{accounts}</b>",
+        reply_markup=_panel_back(),
+    )
+    await callback.answer()

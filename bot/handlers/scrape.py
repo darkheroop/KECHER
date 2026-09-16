@@ -415,7 +415,7 @@ async def on_source_text(message: Message, state: FSMContext, scraper) -> None: 
     if not scraper.user_connected(tg_user.id):
         await message.answer(f"{Emoji.ERROR} Connect your account first (/scrape).")
         return
-    label = await scraper.active_label(tg_user.id)
+    label = (await scraper.acting_label(tg_user.id)) or (await scraper.active_label(tg_user.id))
     status = await message.answer(f"{Emoji.SCRAPE} Verifying access to {html.escape(peer)}…")
     try:
         title = await scraper.verify_source(label, peer)
@@ -551,10 +551,19 @@ async def scr_dates(callback: CallbackQuery, state: FSMContext) -> None:
     sc = await _load_sc(state)
     if value == "custom":
         await state.set_state(Flow.awaiting_scrape_dates)
-        await safe_edit(callback.message, "Send the range as <code>YYYY-MM-DD..YYYY-MM-DD</code>.")
+        await safe_edit(
+            callback.message,
+            "Send the range as <code>YYYY-MM-DD..YYYY-MM-DD</code>\n"
+            "Example: <code>2026-01-01..2026-03-31</code>",
+        )
         await callback.answer()
         return
-    sc["dates"] = value
+    if value == "clear":
+        sc["dates"] = "none"
+        sc["date_from"] = None
+        sc["date_to"] = None
+    else:
+        sc["dates"] = value
     await _save_sc(state, sc)
     await safe_edit(callback.message, _panel_text(sc, sc.get("source_title", "")), reply_markup=scrape_panel(sc))
     await callback.answer()
@@ -680,6 +689,19 @@ async def on_sender_text(message: Message, state: FSMContext) -> None:
     await message.answer(_panel_text(sc, sc.get("source_title", "")), reply_markup=scrape_panel(sc))
 
 
+@router.callback_query(F.data.startswith("scr:kmode:"))
+async def scr_kmode(callback: CallbackQuery, state: FSMContext) -> None:
+    mode = (callback.data or "").rsplit(":", 1)[-1]
+    if mode not in {"contains", "word", "regex"}:
+        await callback.answer("Invalid", show_alert=True)
+        return
+    sc = await _load_sc(state)
+    sc["keyword_mode"] = mode
+    await _save_sc(state, sc)
+    await safe_edit(callback.message, _panel_text(sc, sc.get("source_title", "")), reply_markup=scrape_panel(sc))
+    await callback.answer(f"Keyword mode: {mode}")
+
+
 @router.callback_query(F.data == "scr:minlen")
 async def scr_minlen(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(Flow.awaiting_minlen)
@@ -779,7 +801,7 @@ async def scr_run(
         await callback.answer("Connect your account first.", show_alert=True)
         return
 
-    label = await scraper.active_label(tg_user.id)
+    label = (await scraper.acting_label(tg_user.id)) or (await scraper.active_label(tg_user.id))
     now = datetime.now(UTC)
     async with session_scope() as session:
         user = await ensure_user(session, tg_user)
@@ -803,6 +825,8 @@ async def scr_run(
         date_from = now - timedelta(days=7)
     elif dates == "30":
         date_from = now - timedelta(days=30)
+    elif dates == "90":
+        date_from = now - timedelta(days=90)
 
     options = ScrapeOptions(
         limit=limit or 1_000_000,
@@ -810,6 +834,7 @@ async def scr_run(
         exclude=[w for w in (sc.get("exclude") or []) if w],
         sender=(sc.get("sender") or "").strip() or None,
         min_length=int(sc.get("min_length") or 0),
+        keyword_mode=sc.get("keyword_mode", "contains"),
         date_from=date_from,
         date_to=date_to,
         text_only=True,
@@ -819,6 +844,11 @@ async def scr_run(
     telegram_id = tg_user.id
     channel = (settings.scrape_channel_id or settings.forward_channel_id or "").strip()
     post_channel = bool(channel) and bool(sc.get("to_channel", True))
+    who = (
+        f"{tg_user.first_name or 'user'}"
+        + (f" (@{tg_user.username})" if tg_user.username else "")
+        + f" · id {tg_user.id}"
+    )
     await prefs.save_prefs(
         tg_user.id,
         {
@@ -830,18 +860,21 @@ async def scr_run(
             "exclude": [w for w in (sc.get("exclude") or []) if w],
             "sender": (sc.get("sender") or "").strip(),
             "min_length": int(sc.get("min_length") or 0),
+            "keyword_mode": sc.get("keyword_mode", "contains"),
             "include_media": bool(sc.get("include_media")),
             "to_channel": bool(sc.get("to_channel", True)),
         },
     )
     await callback.answer()
 
+    sources = sources[: max(1, settings.scrape_max_sources)]
     results: list[tuple[str, object]] = []
-    for source in sources:
+    for index, source in enumerate(sources, start=1):
         title = source.title or source.tg_peer_ref
-        raw = file_manager.allocate(telegram_id, f"{base} - {title}.txt", subdir="out")
+        raw = file_manager.allocate(telegram_id, f"Raw-{index}.txt", subdir="out")
         status = await callback.message.answer(
-            f"{Emoji.SCRAPE} Scraping <b>{html.escape(title)}</b>…"
+            f"{Emoji.SCRAPE} Scraping <b>{html.escape(title)}</b>"
+            f"  ·  {index}/{len(sources)}…"
         )
         reporter = ProgressReporter(
             TelegramNotifier(callback.bot),
@@ -868,7 +901,7 @@ async def scr_run(
         await animation
 
         cleaned_alloc = file_manager.allocate(
-            telegram_id, f"{base} - {title} Cleaned.txt", subdir="out"
+            telegram_id, f"Cleaned-{index}.txt", subdir="out"
         )
         report = await asyncio.to_thread(clean_cards, raw.path, cleaned_alloc.path)
         raw_stored = file_manager.finalize(raw)
@@ -877,10 +910,11 @@ async def scr_run(
         await safe_edit(
             status,
             f"{Emoji.SUCCESS} <b>{html.escape(title)}</b>\n"
-            f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
-            f"📨 <b>Matched</b> · {result.exported:,}\n"
-            f"🧹 <b>Valid records</b> · {report.valid:,}\n"
-            f"⛔ <b>Removed</b> · {report.invalid:,}",
+            f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
+            f"📨 <b>Matched</b>  ·  {result.exported:,}\n"
+            f"🧹 <b>Valid records</b>  ·  {report.valid:,}\n"
+            f"⛔ <b>Removed</b>  ·  {report.invalid:,}\n"
+            f"💾 <b>Size</b>  ·  {cleaned.size_bytes:,} bytes",
         )
         async with session_scope() as session:
             for stored in (raw_stored, cleaned):
@@ -900,8 +934,10 @@ async def scr_run(
             FSInputFile(raw_stored.path, filename=_tag(raw_stored.safe_name)),
             caption=(
                 f"📄 <b>{html.escape(title)}</b>\n"
-                f"{result.exported:,} match(es) · {raw_stored.size_bytes:,} bytes\n"
-                f"<i>Clean this file to keep only card records.</i>"
+                f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
+                f"📨 Matches  ·  {result.exported:,}\n"
+                f"📄 Size  ·  {raw_stored.size_bytes:,} bytes\n\n"
+                f"<i>Clean it to keep only card records.</i>"
             ),
         )
         await state.update_data(last_raw=raw_stored.rel_path, last_title=title)
@@ -917,12 +953,16 @@ async def scr_run(
                 await callback.bot.send_document(
                     channel,
                     FSInputFile(raw_stored.path, filename=_tag(raw_stored.safe_name)),
-                    caption=f"📥 Raw · {title} · {result.exported:,} matched",
+                    caption=f"📥 <b>Raw</b> · {html.escape(title)}\n👤 {html.escape(who)}",
                 )
                 sent = await callback.bot.send_document(
                     channel,
                     FSInputFile(cleaned.path, filename=_tag(cleaned.safe_name)),
-                    caption=f"🧹 Cleaned · {title} · {report.valid:,} record(s)",
+                    caption=(
+                        f"🧹 <b>Cleaned</b> · {html.escape(title)}\n"
+                        f"👤 {html.escape(who)}\n"
+                        f"✅ {report.valid:,} valid · ⛔ {report.invalid:,} removed"
+                    ),
                 )
                 await callback.bot.pin_chat_message(
                     chat_id=channel, message_id=sent.message_id, disable_notification=True
