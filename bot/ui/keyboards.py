@@ -16,32 +16,32 @@ def _mark(label: str, active: bool) -> str:
     return f"{Emoji.SUCCESS} {label}" if active else label
 
 
-def main_menu(is_admin: bool = False) -> InlineKeyboardMarkup:
-    """The 2-column grid; the Admin Panel button is only shown to admins."""
-    rows: list[list[InlineKeyboardButton]] = [
-        [_btn(f"{Emoji.FIND} Scrape", "menu:scrape"), _btn(f"{Emoji.CLEAN} Clean", "menu:clean")],
-        [_btn(f"{Emoji.LIVE_CHECK} Live Check", "menu:live"), _btn(f"{Emoji.FIND} Filter", "menu:filter")],
-        [_btn(f"{Emoji.SPLIT} Split", "menu:split"), _btn(f"{Emoji.RECYCLE} Dedup", "menu:dedup")],
-        [_btn(f"{Emoji.PAGE} Add File", "menu:addfile"), _btn(f"{Emoji.STAR} Merge", "menu:merge")],
-        [_btn(f"{Emoji.FIND} Find BIN", "menu:findbin")],
+def main_menu() -> InlineKeyboardMarkup:
+    """Clean 2-column grid; admin tools live under Settings."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_btn(f"{Emoji.SCRAPE} Scrape", "menu:scrape"), _btn(f"{Emoji.CLEAN} Clean", "menu:clean")],
+            [_btn(f"{Emoji.LIVE_CHECK} Live Check", "menu:live"), _btn(f"{Emoji.COUNTRY} Country", "menu:filter")],
+            [_btn(f"{Emoji.SPLIT} Split", "menu:split"), _btn(f"{Emoji.RECYCLE} Dedup", "menu:dedup")],
+            [_btn(f"{Emoji.PAGE} Add File", "menu:addfile"), _btn(f"{Emoji.MERGE} Merge", "menu:merge")],
+            [_btn(f"{Emoji.FIND} Find BIN", "menu:findbin")],
+            [_btn(f"{Emoji.SETTINGS} Settings", "settings:open")],
+        ]
+    )
+
+
+def settings_menu(ui_mode: str, is_admin: bool = False) -> InlineKeyboardMarkup:
+    button = ui_mode == UIMode.BUTTONS.value
+    rows = [
+        [
+            _btn(_mark(f"{Emoji.BUTTON_MODE} Button", button), "set:mode:button"),
+            _btn(_mark(f"{Emoji.TEXT_MODE} Text", not button), "set:mode:text"),
+        ]
     ]
     if is_admin:
         rows.append([_btn(f"{Emoji.ADMIN} Admin Panel", "adm:panel:home")])
-    rows.append([_btn(f"{Emoji.SETTINGS} Settings", "settings:open")])
+    rows.append([_btn(f"{Emoji.BACK} Back", "menu:home")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def settings_menu(ui_mode: str) -> InlineKeyboardMarkup:
-    button = ui_mode == UIMode.BUTTONS.value
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                _btn(_mark(f"{Emoji.BUTTON_MODE} Button", button), "set:mode:button"),
-                _btn(_mark(f"{Emoji.TEXT_MODE} Text", not button), "set:mode:text"),
-            ],
-            [_btn(f"{Emoji.BACK} Back", "menu:home")],
-        ]
-    )
 
 
 def card_actions(file_id: int) -> InlineKeyboardMarkup:

@@ -38,6 +38,24 @@ HELP_TEXT = (
     f"<i>Record:</i> <code>serial|date|time|count</code>"
 )
 
+TEXT_GUIDE = (
+    f"{HEADER}\n{DIVIDER}\n"
+    "<b>Commands</b>\n"
+    f"{Emoji.CLEAN} <code>/clean</code> — clean card lines\n"
+    f"{Emoji.LIVE_CHECK} <code>/live</code> — Luhn validation\n"
+    f"{Emoji.FIND} <code>/filter 123456</code> — a series\n"
+    f"<code>/filter canada</code> — a keyword\n"
+    f"{Emoji.FIND} <code>/findbin 411111</code> — filter by BIN\n"
+    f"{Emoji.SPLIT} <code>/split N</code> — split a file\n"
+    f"{Emoji.RECYCLE} <code>/dedup</code> — remove duplicates\n"
+    f"{Emoji.PAGE} <code>/addfile</code> — add to merge queue\n"
+    f"{Emoji.MERGE} <code>/merge</code> — merge queued files\n"
+    f"<code>/clearqueue</code> — clear merge queue\n\n"
+    f"{Emoji.SETTINGS} <code>/settings</code> — change UI mode\n"
+    f"{Emoji.ADMIN} <code>/admin</code> — admin panel\n\n"
+    "⚠️ Reply to a .txt file when using file commands."
+)
+
 MENU_INSTRUCTIONS = {
     "clean": "Reply to a .txt with <code>/clean</code>.",
     "live": "Reply to a .txt with <code>/live</code>.",
@@ -111,9 +129,11 @@ async def handle_start(message: Message, settings: Settings) -> None:
 
     first_time = onboarding_text(tg_user.first_name) if created else welcome_text()
     if _is_button_mode(settings_row.ui_mode):
-        await message.answer(first_time, reply_markup=main_menu(admin))
+        await message.answer(first_time, reply_markup=main_menu())
     else:
-        await message.answer(first_time + "\n\n" + HELP_TEXT if created else HELP_TEXT)
+        await message.answer(
+            (onboarding_text(tg_user.first_name) + "\n\n" + TEXT_GUIDE) if created else TEXT_GUIDE
+        )
 
 
 @router.message(Command("emojis"))
@@ -143,7 +163,7 @@ async def handle_emojis(message: Message) -> None:
 @router.message(Command("menu"))
 async def handle_menu(message: Message, settings: Settings) -> None:
     admin = await _is_admin(message, settings)
-    await message.answer(welcome_text(), reply_markup=main_menu(admin))
+    await message.answer(welcome_text(), reply_markup=main_menu())
 
 
 @router.message(Command("help"))
@@ -154,7 +174,7 @@ async def handle_help(message: Message) -> None:
 @router.callback_query(F.data == "menu:home")
 async def menu_home(callback: CallbackQuery, settings: Settings) -> None:
     admin = await _is_admin(callback, settings)
-    await safe_edit(callback.message, welcome_text(), reply_markup=main_menu(admin))
+    await safe_edit(callback.message, welcome_text(), reply_markup=main_menu())
     await callback.answer()
 
 
@@ -199,14 +219,18 @@ def _settings_text(ui_mode: str) -> str:
 @router.message(Command("settings"))
 async def cmd_settings(message: Message, settings: Settings) -> None:
     ui_mode = await _mode(message)
-    await message.answer(_settings_text(ui_mode), reply_markup=settings_menu(ui_mode))
+    admin = await _is_admin(message, settings)
+    await message.answer(_settings_text(ui_mode), reply_markup=settings_menu(ui_mode, admin))
 
 
 @router.callback_query(F.data == "settings:open")
 async def settings_open(callback: CallbackQuery, settings: Settings) -> None:
     ui_mode = await _mode(callback)
+    admin = await _is_admin(callback, settings)
     await safe_edit(
-        callback.message, _settings_text(ui_mode), reply_markup=settings_menu(ui_mode)
+        callback.message,
+        _settings_text(ui_mode),
+        reply_markup=settings_menu(ui_mode, admin),
     )
     await callback.answer()
 
@@ -218,7 +242,10 @@ async def set_mode(callback: CallbackQuery, settings: Settings) -> None:
     async with session_scope() as session:
         user = await ensure_user(session, callback.from_user)
         await update_user_settings(session, user.id, ui_mode=ui_mode)
+    admin = await _is_admin(callback, settings)
     await safe_edit(
-        callback.message, _settings_text(ui_mode), reply_markup=settings_menu(ui_mode)
+        callback.message,
+        _settings_text(ui_mode),
+        reply_markup=settings_menu(ui_mode, admin),
     )
     await callback.answer("Saved")
