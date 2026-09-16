@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from pathlib import Path
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -41,6 +42,26 @@ from bot.ui.emoji import configure_custom
 logger = logging.getLogger(__name__)
 
 REAP_INTERVAL_SECONDS = 300
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _upgrade_sync() -> None:
+    from alembic import command
+    from alembic.config import Config
+
+    config = Config(str(PROJECT_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(PROJECT_ROOT / "bot" / "db" / "migrations"))
+    command.upgrade(config, "head")
+
+
+async def ensure_schema(settings: Settings) -> None:
+    """Apply Alembic migrations at startup (works even if the host skips them)."""
+    try:
+        await asyncio.to_thread(_upgrade_sync)
+        logger.info("Database migrations applied (head)")
+    except Exception:  # noqa: BLE001 - fall back to create_all
+        logger.exception("Alembic upgrade failed; falling back to create_all")
+        await init_db(settings)
 
 
 async def verify_custom_emoji(bot: Bot, settings: Settings) -> None:
@@ -120,9 +141,8 @@ async def run() -> None:
 
     if not settings.is_production:
         settings.resolved_storage_root().mkdir(parents=True, exist_ok=True)
-        await init_db(settings)
-        logger.info("Database schema ensured (development mode)")
 
+    await ensure_schema(settings)
     await load_into_settings(settings)
 
     bot = build_bot(settings)
