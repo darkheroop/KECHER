@@ -14,3 +14,6 @@ class Flow(StatesGroup):
     awaiting_source = State()
     awaiting_keywords = State()
     awaiting_scrape_dates = State()
+    awaiting_phone = State()
+    awaiting_code = State()
+    awaiting_password = State()

@@ -1,15 +1,16 @@
-"""Authorized scraping from groups/channels (Telethon) with a button UI."""
+"""Authorized per-user scraping from groups/channels (Telethon) with buttons."""
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import html
 from datetime import UTC, datetime, timedelta
 
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, FSInputFile, Message
+from aiogram.types import CallbackQuery, Message
 
 from bot.config import Settings
 from bot.db.engine import session_scope
@@ -20,11 +21,10 @@ from bot.db.repositories import (
     get_user_settings,
     list_authorized_sources,
 )
-from bot.handlers.cards import _send_file, _tag
+from bot.handlers.cards import _send_file
 from bot.handlers.common import ensure_user
 from bot.handlers.states import Flow
-from bot.security.access import is_admin
-from bot.services.cards import clean_cards, count_lines
+from bot.services.cards import clean_cards
 from bot.services.file_manager import FileManager
 from bot.services.scraper import ScrapeOptions, is_scraper_available
 from bot.ui.emoji import Emoji
@@ -33,20 +33,26 @@ from bot.ui.render import safe_edit
 
 router = Router(name="scrape")
 
-PLOGIN_GUIDE = (
-    f"{Emoji.LOGIN} <b>Connect a private account</b>\n\n"
-    "Scraping needs a Telegram <b>user account</b> (a bot can't read history). "
-    "Do this once, in your own terminal — never send credentials here.\n\n"
-    "<b>1.</b> Go to <b>https://my.telegram.org</b> → API development tools\n"
-    "     and copy your <b>api_id</b> and <b>api_hash</b>.\n"
-    "<b>2.</b> Put them in your environment:\n"
-    "     <code>TELEGRAM_API_ID=…</code>\n"
-    "     <code>TELEGRAM_API_HASH=…</code>\n"
-    "<b>3.</b> In a terminal run:\n"
-    "     <code>python -m bot.tools.plogin main</code>\n"
-    "     Enter your phone number and the login code there.\n"
-    "<b>4.</b> Come back and send /myaccounts — it should show <b>Connected</b>.\n\n"
-    f"{Emoji.SECURITY} The account must already be a member of the source."
+DIVIDER = "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄"
+
+HELP_INTRO = (
+    f"{Emoji.SCRAPE} <b>Scrape</b>\n{DIVIDER}\n"
+    "Collect messages from a group/channel you belong to, filter by keyword(s), "
+    "export to a .txt and clean it — automatically.\n\n"
+    "For this you connect <b>your own</b> Telegram account (a bot can't read history)."
+)
+
+HOW_IT_WORKS = (
+    f"{Emoji.LOGIN} <b>Connecting your account</b>\n{DIVIDER}\n"
+    "<b>1.</b> Get API credentials at <b>https://my.telegram.org</b> → "
+    "API development tools (<i>api_id</i>, <i>api_hash</i>).\n"
+    "<b>2.</b> The bot owner sets them once in the server environment.\n"
+    "<b>3.</b> Tap <b>Connect my account</b> and send your phone number.\n"
+    "<b>4.</b> Telegram sends you a login code — send it here, then your password "
+    "if you have 2FA.\n"
+    "<b>5.</b> Done — a session is stored on the server and used only for scraping.\n\n"
+    f"{Emoji.WARNING} The code/password are used once to create the session and are "
+    "never stored or logged. Delete those messages after connecting."
 )
 
 DEFAULT_STATE = {
@@ -58,45 +64,13 @@ DEFAULT_STATE = {
 }
 
 
-async def _accounts(scraper) -> list:  # noqa: ANN001
-    return scraper.registry.accounts() if scraper and hasattr(scraper, "registry") else []
-
-
-def _ready(scraper, settings: Settings) -> bool:  # noqa: ANN001
+def _api_ready(scraper, settings: Settings) -> bool:  # noqa: ANN001
     if not is_scraper_available() or scraper is None:
         return False
     try:
         return bool(scraper.available())
     except Exception:  # noqa: BLE001
         return False
-
-
-async def _source_list(user_id: int, kinds: set[str] | None = None) -> list:
-    async with session_scope() as session:
-        sources = await list_authorized_sources(session, user_id)
-    if kinds is not None:
-        sources = [s for s in sources if s.kind in kinds]
-    return sources
-
-
-async def _panel_text(sc, source_title: str) -> str:  # noqa: ANN001
-    keywords = ", ".join(sc.get("keywords") or []) or "any"
-    limit = sc.get("limit", 100)
-    mode = "Cards" if sc.get("mode") == "cards" else "Messages"
-    autoclean = "on" if sc.get("autoclean") else "off"
-    dates = {"none": "all", "7": "last 7d", "30": "last 30d", "custom": "custom"}.get(
-        sc.get("dates", "none"), "all"
-    )
-    return (
-        f"{Emoji.SCRAPE} <b>Scrape</b>\n{DIVIDER}\n"
-        f"Source · <b>{html.escape(source_title)}</b>\n"
-        f"Keywords · <b>{html.escape(keywords)}</b>\n"
-        f"Limit · <b>{limit if limit else 'All'}</b>   Mode · <b>{mode}</b>\n"
-        f"Dates · <b>{dates}</b>   Auto-clean · <b>{autoclean}</b>"
-    )
-
-
-DIVIDER = "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄"
 
 
 async def _load_sc(state: FSMContext) -> dict:
@@ -111,51 +85,95 @@ async def _save_sc(state: FSMContext, sc: dict) -> None:
     await state.update_data(sc=sc)
 
 
-# --------------------------------------------------------------------------- #
-# Entry points
-# --------------------------------------------------------------------------- #
-@router.message(Command("scrape"))
-async def cmd_scrape(message: Message, state: FSMContext, scraper, settings: Settings) -> None:  # noqa: ANN001
-    if not _ready(scraper, settings):
-        await message.answer(PLOGIN_GUIDE, reply_markup=account_help())
+def _panel_text(sc: dict, title: str) -> str:
+    keywords = ", ".join(sc.get("keywords") or []) or "any"
+    limit = sc.get("limit", 100)
+    mode = "Cards" if sc.get("mode") == "cards" else "Messages"
+    autoclean = "on" if sc.get("autoclean") else "off"
+    dates = {"none": "all", "7": "7d", "30": "30d", "custom": "custom"}.get(
+        sc.get("dates", "none"), "all"
+    )
+    return (
+        f"{Emoji.SCRAPE} <b>Scrape</b>\n{DIVIDER}\n"
+        f"Source · <b>{html.escape(title)}</b>\n"
+        f"Keywords · <b>{html.escape(keywords)}</b>\n"
+        f"Limit · <b>{limit or 'All'}</b>   Mode · <b>{mode}</b>\n"
+        f"Dates · <b>{dates}</b>   Auto-clean · <b>{autoclean}</b>"
+    )
+
+
+async def _scrape_entry(reply: Message, tg_user, state: FSMContext, scraper, settings: Settings) -> None:  # noqa: ANN001
+    await state.update_data(sc={})
+    if not is_scraper_available():
+        await reply.answer(
+            f"{Emoji.ERROR} Scraping isn't enabled on this server yet.", reply_markup=account_help()
+        )
         return
-    tg_user = message.from_user
-    assert tg_user is not None
+    if not _api_ready(scraper, settings):
+        await reply.answer(
+            f"{Emoji.LOGIN} <b>Scraping needs API credentials</b>\n{DIVIDER}\n"
+            "<b>1.</b> <b>https://my.telegram.org</b> → API development tools\n"
+            "<b>2.</b> Set <code>TELEGRAM_API_ID</code> / <code>TELEGRAM_API_HASH</code> "
+            "in the server environment, then redeploy.\n"
+            "<b>3.</b> Come back and connect your account.",
+            reply_markup=None,
+        )
+        return
+    if not scraper.user_connected(tg_user.id):
+        await reply.answer(
+            f"{Emoji.LOGIN} <b>Connect your account to scrape</b>\n{DIVIDER}\n"
+            "Tap below and follow the 3 steps (phone → code → password).",
+            reply_markup=account_help(),
+        )
+        return
     async with session_scope() as session:
         user = await ensure_user(session, tg_user)
-        user_id = user.id
-    sources = await _source_list(user_id)
-    await state.update_data(sc={})
-    await message.answer(
-        f"{Emoji.SCRAPE} <b>Scrape</b>\n\nChoose a source, or add one:",
+        sources = await list_authorized_sources(session, user.id)
+    await reply.answer(
+        f"{Emoji.SCRAPE} <b>Scrape</b>\n\nConnected ✅ — choose a source, or add one:",
         reply_markup=scrape_sources([(s.id, s.title or s.tg_peer_ref) for s in sources]),
     )
 
 
+@router.message(Command("scrape"))
+async def cmd_scrape(message: Message, state: FSMContext, scraper, settings: Settings) -> None:  # noqa: ANN001
+    assert message.from_user is not None
+    await _scrape_entry(message, message.from_user, state, scraper, settings)
+
+
+@router.callback_query(F.data == "menu:scrape")
+async def menu_scrape(callback: CallbackQuery, state: FSMContext, scraper, settings: Settings) -> None:  # noqa: ANN001
+    if callback.message is not None:
+        await _scrape_entry(callback.message, callback.from_user, state, scraper, settings)
+    await callback.answer()
+
+
 @router.message(Command("plogin"))
 async def cmd_plogin(message: Message) -> None:
-    await message.answer(PLOGIN_GUIDE, reply_markup=account_help())
+    await message.answer(HOW_IT_WORKS, reply_markup=account_help())
 
 
 @router.message(Command("myaccounts"))
 async def cmd_myaccounts(message: Message, scraper) -> None:  # noqa: ANN001
-    accounts = await _accounts(scraper)
-    if not accounts:
+    assert message.from_user is not None
+    account = scraper.user_account(message.from_user.id) if scraper else None
+    if account is None:
         await message.answer(
-            f"{Emoji.ACCOUNT} No account connected.\n\nSee /plogin.",
+            f"{Emoji.ACCOUNT} No account connected.\n\nConnect one to start scraping.",
             reply_markup=account_help(),
         )
         return
-    lines = [f"{Emoji.ACCOUNT} <b>Authorized accounts</b>", ""]
-    for index, account in enumerate(accounts, start=1):
-        status = scraper.registry.status(account)
-        lines.append(f"{index}. <b>{account.label}</b> · {status}")
-    await message.answer("\n".join(lines))
+    status = scraper.registry.status(account)
+    await message.answer(
+        f"{Emoji.ACCOUNT} <b>Your account</b>\n{DIVIDER}\n"
+        f"<b>{account.label}</b> · {status}",
+        reply_markup=account_help() if status != "Connected" else None,
+    )
 
 
-@router.callback_query(F.data == "scr:help")
+@router.callback_query(F.data == "scr:helptext")
 async def scr_help(callback: CallbackQuery) -> None:
-    await safe_edit(callback.message, PLOGIN_GUIDE, reply_markup=account_help())
+    await safe_edit(callback.message, HOW_IT_WORKS, reply_markup=account_help())
     await callback.answer()
 
 
@@ -167,7 +185,89 @@ async def scr_cancel(callback: CallbackQuery, state: FSMContext) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Add source
+# Account login (per user)
+# --------------------------------------------------------------------------- #
+async def _delete_sensitive(message: Message) -> None:
+    with contextlib.suppress(Exception):
+        await message.delete()
+
+
+@router.callback_query(F.data == "scr:login")
+async def scr_login(callback: CallbackQuery, state: FSMContext, scraper, settings: Settings) -> None:  # noqa: ANN001
+    if not _api_ready(scraper, settings):
+        await callback.answer("Server API credentials are not set.", show_alert=True)
+        return
+    await state.set_state(Flow.awaiting_phone)
+    await safe_edit(
+        callback.message,
+        f"{Emoji.LOGIN} Send your phone number in international format, e.g. "
+        "<code>+919876543210</code>.\n\n"
+        f"{Emoji.WARNING} Delete it after — it's used once to log you in.",
+    )
+    await callback.answer()
+
+
+@router.message(Flow.awaiting_phone)
+async def on_phone(message: Message, state: FSMContext, scraper) -> None:  # noqa: ANN001
+    phone = (message.text or "").strip().replace(" ", "")
+    await _delete_sensitive(message)
+    assert message.from_user is not None
+    if not phone.startswith("+") or not phone[1:].isdigit():
+        await message.answer("Send it as <code>+countrycode…</code>, e.g. <code>+919876543210</code>.")
+        return
+    status = await message.answer(f"{Emoji.LOGIN} Sending a login code to Telegram…")
+    try:
+        await scraper.start_login(owner=message.from_user.id, phone=phone)
+    except Exception as exc:  # noqa: BLE001
+        await safe_edit(status, f"{Emoji.ERROR} Could not start login: <code>{type(exc).__name__}</code>")
+        return
+    await state.set_state(Flow.awaiting_code)
+    await safe_edit(
+        status,
+        f"{Emoji.KEY} <b>Enter the login code</b> Telegram sent you.\n\n"
+        f"{Emoji.WARNING} I use it once to create your session, then it's gone. "
+        "Delete the message after.",
+    )
+
+
+@router.message(Flow.awaiting_code)
+async def on_code(message: Message, state: FSMContext, scraper) -> None:  # noqa: ANN001
+    code = (message.text or "").strip()
+    await _delete_sensitive(message)
+    assert message.from_user is not None
+    status = await message.answer(f"{Emoji.PROGRESS} Checking the code…")
+    result = await scraper.confirm_code(owner=message.from_user.id, code=code)
+    if result == "password":
+        await state.set_state(Flow.awaiting_password)
+        await safe_edit(status, f"{Emoji.KEY} Two-step password enabled — send your <b>password</b>.")
+        return
+    if result == "ok":
+        await state.clear()
+        await safe_edit(status, f"{Emoji.SUCCESS} Account connected ✅ — now open /scrape.")
+        return
+    if result == "expired":
+        await state.clear()
+        await safe_edit(status, f"{Emoji.ERROR} Login expired. Tap Connect again.")
+        return
+    await safe_edit(status, f"{Emoji.ERROR} Login failed: <code>{html.escape(result)}</code>")
+
+
+@router.message(Flow.awaiting_password)
+async def on_password(message: Message, state: FSMContext, scraper) -> None:  # noqa: ANN001
+    password = (message.text or "").strip()
+    await _delete_sensitive(message)
+    assert message.from_user is not None
+    status = await message.answer(f"{Emoji.PROGRESS} Verifying…")
+    result = await scraper.confirm_password(owner=message.from_user.id, password=password)
+    await state.clear()
+    if result == "ok":
+        await safe_edit(status, f"{Emoji.SUCCESS} Account connected ✅ — now open /scrape.")
+    else:
+        await safe_edit(status, f"{Emoji.ERROR} Failed: <code>{html.escape(result)}</code>")
+
+
+# --------------------------------------------------------------------------- #
+# Sources
 # --------------------------------------------------------------------------- #
 @router.callback_query(F.data == "scr:add")
 async def scr_add(callback: CallbackQuery, state: FSMContext) -> None:
@@ -175,25 +275,23 @@ async def scr_add(callback: CallbackQuery, state: FSMContext) -> None:
     await safe_edit(
         callback.message,
         f"{Emoji.SCRAPE} Send the source as <code>@username</code> or a numeric "
-        "<code>-100…</code> id.\n\nIt must be a public channel or a group/channel "
-        "you already belong to.",
+        "<code>-100…</code> id (public, or a group/channel you belong to).",
     )
     await callback.answer()
 
 
 @router.message(Flow.awaiting_source)
-async def on_source_text(message: Message, state: FSMContext, scraper, settings: Settings) -> None:  # noqa: ANN001
+async def on_source_text(message: Message, state: FSMContext, scraper) -> None:  # noqa: ANN001
     peer = (message.text or "").strip()
     tg_user = message.from_user
     assert tg_user is not None
     if not peer:
         await message.answer("Send <code>@username</code> or <code>-100…</code>.")
         return
-    accounts = await _accounts(scraper)
-    label = next((a.label for a in accounts if a.enabled), None)
-    if label is None:
-        await message.answer(f"{Emoji.ERROR} No connected account. See /plogin.")
+    if not scraper.user_connected(tg_user.id):
+        await message.answer(f"{Emoji.ERROR} Connect your account first (/scrape).")
         return
+    label = scraper.label_for(tg_user.id)
     status = await message.answer(f"{Emoji.SCRAPE} Verifying access to {html.escape(peer)}…")
     try:
         title = await scraper.verify_source(label, peer)
@@ -222,7 +320,7 @@ async def on_source_text(message: Message, state: FSMContext, scraper, settings:
 
 
 # --------------------------------------------------------------------------- #
-# Options panel
+# Options
 # --------------------------------------------------------------------------- #
 @router.callback_query(F.data.startswith("scr:src:"))
 async def scr_pick_source(callback: CallbackQuery, state: FSMContext) -> None:
@@ -241,7 +339,7 @@ async def scr_pick_source(callback: CallbackQuery, state: FSMContext) -> None:
     sc["source_id"] = int(raw)
     sc["source_title"] = title
     await _save_sc(state, sc)
-    await safe_edit(callback.message, await _panel_text(sc, title), reply_markup=scrape_panel(sc))
+    await safe_edit(callback.message, _panel_text(sc, title), reply_markup=scrape_panel(sc))
     await callback.answer()
 
 
@@ -250,8 +348,8 @@ async def scr_keywords(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(Flow.awaiting_keywords)
     await safe_edit(
         callback.message,
-        f"{Emoji.FIND} Send the keyword(s), separated by commas.\n"
-        "Matching is case-insensitive. Example: <code>invoice, promo, 411111</code>",
+        f"{Emoji.FIND} Send keyword(s), comma-separated (case-insensitive).\n"
+        "Example: <code>invoice, promo, 411111</code>",
     )
     await callback.answer()
 
@@ -263,19 +361,15 @@ async def on_keywords_text(message: Message, state: FSMContext) -> None:
     sc["keywords"] = [w for w in words if w]
     await _save_sc(state, sc)
     await state.set_state(None)
-    await message.answer(
-        await _panel_text(sc, sc.get("source_title", "")),
-        reply_markup=scrape_panel(sc),
-    )
+    await message.answer(_panel_text(sc, sc.get("source_title", "")), reply_markup=scrape_panel(sc))
 
 
 @router.callback_query(F.data.startswith("scr:limit:"))
 async def scr_limit(callback: CallbackQuery, state: FSMContext) -> None:
-    value = int((callback.data or "").rsplit(":", 1)[-1])
     sc = await _load_sc(state)
-    sc["limit"] = value
+    sc["limit"] = int((callback.data or "").rsplit(":", 1)[-1])
     await _save_sc(state, sc)
-    await safe_edit(callback.message, await _panel_text(sc, sc.get("source_title", "")), reply_markup=scrape_panel(sc))
+    await safe_edit(callback.message, _panel_text(sc, sc.get("source_title", "")), reply_markup=scrape_panel(sc))
     await callback.answer()
 
 
@@ -284,7 +378,7 @@ async def scr_mode(callback: CallbackQuery, state: FSMContext) -> None:
     sc = await _load_sc(state)
     sc["mode"] = "cards" if (callback.data or "").endswith("cards") else "messages"
     await _save_sc(state, sc)
-    await safe_edit(callback.message, await _panel_text(sc, sc.get("source_title", "")), reply_markup=scrape_panel(sc))
+    await safe_edit(callback.message, _panel_text(sc, sc.get("source_title", "")), reply_markup=scrape_panel(sc))
     await callback.answer()
 
 
@@ -293,7 +387,7 @@ async def scr_autoclean(callback: CallbackQuery, state: FSMContext) -> None:
     sc = await _load_sc(state)
     sc["autoclean"] = not sc.get("autoclean", True)
     await _save_sc(state, sc)
-    await safe_edit(callback.message, await _panel_text(sc, sc.get("source_title", "")), reply_markup=scrape_panel(sc))
+    await safe_edit(callback.message, _panel_text(sc, sc.get("source_title", "")), reply_markup=scrape_panel(sc))
     await callback.answer()
 
 
@@ -308,24 +402,20 @@ async def scr_dates(callback: CallbackQuery, state: FSMContext) -> None:
         return
     sc["dates"] = value
     await _save_sc(state, sc)
-    await safe_edit(callback.message, await _panel_text(sc, sc.get("source_title", "")), reply_markup=scrape_panel(sc))
+    await safe_edit(callback.message, _panel_text(sc, sc.get("source_title", "")), reply_markup=scrape_panel(sc))
     await callback.answer()
 
 
 @router.message(Flow.awaiting_scrape_dates)
 async def on_scrape_dates(message: Message, state: FSMContext) -> None:
-    text = (message.text or "").strip()
-    start, _, end = text.partition("..")
+    start, _, end = (message.text or "").strip().partition("..")
     sc = await _load_sc(state)
     sc["dates"] = "custom"
     sc["date_from"] = start.strip() or None
     sc["date_to"] = end.strip() or None
     await _save_sc(state, sc)
     await state.set_state(None)
-    await message.answer(
-        await _panel_text(sc, sc.get("source_title", "")),
-        reply_markup=scrape_panel(sc),
-    )
+    await message.answer(_panel_text(sc, sc.get("source_title", "")), reply_markup=scrape_panel(sc))
 
 
 # --------------------------------------------------------------------------- #
@@ -350,16 +440,15 @@ async def scr_run(
     settings: Settings,
 ) -> None:
     sc = await _load_sc(state)
+    tg_user = callback.from_user
     if not sc.get("source_id"):
         await callback.answer("Pick a source first", show_alert=True)
         return
-    if not _ready(scraper, settings):
-        await callback.answer("No account connected. See /plogin.", show_alert=True)
+    if not scraper.user_connected(tg_user.id):
+        await callback.answer("Connect your account first.", show_alert=True)
         return
 
-    accounts = await _accounts(scraper)
-    label = next((a.label for a in accounts if a.enabled), None)
-    tg_user = callback.from_user
+    label = scraper.label_for(tg_user.id)
     async with session_scope() as session:
         user = await ensure_user(session, tg_user)
         source = await get_authorized_source(session, user.id, int(sc["source_id"]))
@@ -396,26 +485,21 @@ async def scr_run(
     )
     try:
         result = await scraper.scrape(
-            label=label,
-            peer_ref=source.tg_peer_ref,
-            out=raw.path,
-            options=options,
-            fmt="txt",
+            label=label, peer_ref=source.tg_peer_ref, out=raw.path, options=options, fmt="txt"
         )
     except Exception as exc:  # noqa: BLE001
         await safe_edit(status, f"{Emoji.ERROR} Scrape failed: <code>{type(exc).__name__}</code>")
         return
 
     final_path = raw.path
-    summary_extra = ""
+    extra = ""
     if sc.get("mode") == "cards" or sc.get("autoclean", True):
         cleaned = file_manager.allocate(telegram_id, f"{label_name} Cleaned.txt", subdir="out")
         report = await asyncio.to_thread(clean_cards, raw.path, cleaned.path)
         final_path = cleaned.path
-        summary_extra = f"\n✅ {report.valid:,} valid records"
+        extra = f"\n✅ {report.valid:,} valid records"
 
     stored = file_manager.finalize_path(telegram_id, final_path)
-
     async with session_scope() as session:
         await create_file(
             session,
@@ -431,12 +515,12 @@ async def scr_run(
     await safe_edit(
         status,
         f"{Emoji.SUCCESS} <b>Scrape complete</b>\n"
-        f"Scanned {result.scanned:,} · matched {result.exported:,}{summary_extra}",
+        f"Scanned {result.scanned:,} · matched {result.exported:,}{extra}",
     )
     await _send_file(
         callback.message,
         stored.path,
         stored.safe_name,
-        f"{Emoji.SCRAPE} {label_name}\n{result.exported:,} message(s) · {stored.size_bytes:,} bytes",
+        f"{Emoji.SCRAPE} {label_name}\n{result.exported:,} message(s)",
     )
     await state.clear()

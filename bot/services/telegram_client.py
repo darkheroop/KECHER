@@ -76,6 +76,7 @@ class TelethonScraper:
     def __init__(self, settings: Settings, registry: AccountRegistry) -> None:
         self._settings = settings
         self._registry = registry
+        self._pending: dict[int, dict] = {}
 
     @property
     def registry(self) -> AccountRegistry:
@@ -87,6 +88,80 @@ class TelethonScraper:
             and self._settings.telegram_api_id > 0
             and bool(self._settings.telegram_api_hash.get_secret_value())
         )
+
+    # -- per-user accounts -------------------------------------------------- #
+    def label_for(self, owner: int) -> str:
+        return f"u{owner}"
+
+    def user_account(self, owner: int):  # noqa: ANN201
+        accounts = self._registry.accounts_for(owner)
+        return accounts[0] if accounts else None
+
+    def user_connected(self, owner: int) -> bool:
+        account = self.user_account(owner)
+        return bool(account) and self._registry.status(account) == "Connected"
+
+    async def start_login(self, *, owner: int, phone: str) -> str:
+        """Send a login code to ``phone`` for the user's own account."""
+        if not self.available():
+            raise ScraperUnavailable("Telegram API credentials are not configured.")
+        from telethon import TelegramClient  # lazy
+
+        label = self.label_for(owner)
+        self._registry.session_dir.mkdir(parents=True, exist_ok=True)
+        session_path = self._registry.session_dir / f"{owner}_{label}.session"
+        client = TelegramClient(
+            str(session_path),
+            self._settings.telegram_api_id,
+            self._settings.telegram_api_hash.get_secret_value(),
+        )
+        await client.connect()
+        sent = await client.send_code_request(phone)
+        self._pending[owner] = {
+            "client": client,
+            "phone": phone,
+            "hash": sent.phone_code_hash,
+            "label": label,
+        }
+        return label
+
+    async def confirm_code(self, *, owner: int, code: str) -> str:
+        state = self._pending.get(owner)
+        if not state:
+            return "expired"
+        from telethon.errors import SessionPasswordNeededError
+
+        try:
+            await state["client"].sign_in(
+                state["phone"], code=code, phone_code_hash=state["hash"]
+            )
+        except SessionPasswordNeededError:
+            return "password"
+        except Exception as exc:  # noqa: BLE001
+            return f"error:{type(exc).__name__}"
+        await self._finish_login(owner)
+        return "ok"
+
+    async def confirm_password(self, *, owner: int, password: str) -> str:
+        state = self._pending.get(owner)
+        if not state:
+            return "expired"
+        try:
+            await state["client"].sign_in(password=password)
+        except Exception as exc:  # noqa: BLE001
+            return f"error:{type(exc).__name__}"
+        await self._finish_login(owner)
+        return "ok"
+
+    async def _finish_login(self, owner: int) -> None:
+        state = self._pending.pop(owner, None)
+        if state:
+            try:
+                await state["client"].disconnect()
+            except Exception:  # noqa: BLE001
+                pass
+        label = self.label_for(owner)
+        self._registry.upsert(label, owner=owner, session=label, enabled=True)
 
     def _session_path(self, label: str) -> Path:
         account = self._registry.get(label)

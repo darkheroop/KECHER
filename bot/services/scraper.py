@@ -177,6 +177,7 @@ class AccountInfo:
     session: str
     enabled: bool = True
     last_used: str | None = None
+    owner: int | None = None  # Telegram user id that owns this session
 
 
 class AccountRegistry:
@@ -203,12 +204,16 @@ class AccountRegistry:
                     session=str(entry.get("session") or entry["label"]),
                     enabled=bool(entry.get("enabled", True)),
                     last_used=entry.get("last_used"),
+                    owner=int(entry["owner"]) if entry.get("owner") is not None else None,
                 )
             )
         return accounts
 
     def accounts(self) -> list[AccountInfo]:
         return self.load()
+
+    def accounts_for(self, owner: int) -> list[AccountInfo]:
+        return [account for account in self.load() if account.owner == owner]
 
     def get(self, label: str) -> AccountInfo | None:
         for account in self.load():
@@ -217,7 +222,8 @@ class AccountRegistry:
         return None
 
     def session_path(self, account: AccountInfo) -> Path:
-        return self.session_dir / f"{account.session}.session"
+        name = f"{account.owner}_{account.session}" if account.owner else account.session
+        return self.session_dir / f"{name}.session"
 
     def status(self, account: AccountInfo) -> str:
         if not account.enabled:
@@ -225,7 +231,12 @@ class AccountRegistry:
         return "Connected" if self.session_path(account).is_file() else "Disconnected"
 
     def upsert(
-        self, label: str, *, session: str | None = None, enabled: bool = True
+        self,
+        label: str,
+        *,
+        session: str | None = None,
+        enabled: bool = True,
+        owner: int | None = None,
     ) -> AccountInfo:
         """Add or update an account entry (label/session only; no secrets)."""
         accounts = self.load()
@@ -234,10 +245,14 @@ class AccountRegistry:
             if account.label == label:
                 account.session = session or account.session
                 account.enabled = enabled
+                if owner is not None:
+                    account.owner = owner
                 target = account
                 break
         if target is None:
-            target = AccountInfo(label=label, session=session or label, enabled=enabled)
+            target = AccountInfo(
+                label=label, session=session or label, enabled=enabled, owner=owner
+            )
             accounts.append(target)
         self._save(accounts)
         return target
@@ -251,6 +266,7 @@ class AccountRegistry:
                     "session": account.session,
                     "enabled": account.enabled,
                     "last_used": account.last_used,
+                    "owner": account.owner,
                 }
                 for account in accounts
             ]

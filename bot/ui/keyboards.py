@@ -122,7 +122,8 @@ def scrape_panel(state: dict) -> InlineKeyboardMarkup:
 def account_help() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [_btn("📖 Connect an account", "scr:help")],
+            [_btn(f"{Emoji.LOGIN} Connect my account", "scr:login")],
+            [_btn("📖 How it works", "scr:helptext")],
             [_btn(f"{Emoji.BACK} Back", "menu:home")],
         ]
     )
