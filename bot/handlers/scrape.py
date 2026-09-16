@@ -737,6 +737,17 @@ async def scr_defaults(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
+@router.callback_query(F.data == "scr:backpanel")
+async def scr_back_panel(callback: CallbackQuery, state: FSMContext) -> None:
+    sc = await _load_sc(state)
+    await safe_edit(
+        callback.message,
+        _panel_text(sc, sc.get("source_title", "")),
+        reply_markup=scrape_panel(sc),
+    )
+    await callback.answer()
+
+
 # --------------------------------------------------------------------------- #
 # Run
 # --------------------------------------------------------------------------- #
@@ -796,6 +807,9 @@ async def scr_run(
     options = ScrapeOptions(
         limit=limit or 1_000_000,
         keywords=keywords,
+        exclude=[w for w in (sc.get("exclude") or []) if w],
+        sender=(sc.get("sender") or "").strip() or None,
+        min_length=int(sc.get("min_length") or 0),
         date_from=date_from,
         date_to=date_to,
         text_only=True,
@@ -804,6 +818,7 @@ async def scr_run(
     base = "Scrape " + ("+".join(keywords) if keywords else "all")
     telegram_id = tg_user.id
     channel = (settings.scrape_channel_id or settings.forward_channel_id or "").strip()
+    post_channel = bool(channel) and bool(sc.get("to_channel", True))
     await prefs.save_prefs(
         tg_user.id,
         {
@@ -812,7 +827,11 @@ async def scr_run(
             "mode": sc.get("mode", "messages"),
             "autoclean": sc.get("autoclean", True),
             "dates": dates,
+            "exclude": [w for w in (sc.get("exclude") or []) if w],
+            "sender": (sc.get("sender") or "").strip(),
+            "min_length": int(sc.get("min_length") or 0),
             "include_media": bool(sc.get("include_media")),
+            "to_channel": bool(sc.get("to_channel", True)),
         },
     )
     await callback.answer()
@@ -893,7 +912,7 @@ async def scr_run(
         )
         results.append((title, raw_stored.rel_path))
 
-        if admin and channel:
+        if admin and post_channel:
             try:
                 await callback.bot.send_document(
                     channel,
