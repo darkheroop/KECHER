@@ -107,7 +107,13 @@ def scrape_panel(state: dict) -> InlineKeyboardMarkup:
             [
                 _btn(_mark("contains", kmode == "contains"), "scr:kmode:contains"),
                 _btn(_mark("word", kmode == "word"), "scr:kmode:word"),
+                _btn(_mark("exact", kmode == "exact"), "scr:kmode:exact"),
                 _btn(_mark("regex", kmode == "regex"), "scr:kmode:regex"),
+            ],
+            [
+                _btn(_mark("field", kmode == "field"), "scr:kmode:field"),
+                _btn(f"Field #{state.get('field_index', 1)}", "scr:fieldidx"),
+                _btn(f"📏 Min len: {minlen}"[:24], "scr:minlen"),
             ],
             [
                 _btn(_mark("100", limit == 100), "scr:limit:100"),
@@ -150,7 +156,6 @@ def scrape_panel(state: dict) -> InlineKeyboardMarkup:
                 _btn(f"👤 Sender: {sender}"[:24], "scr:sender"),
             ],
             [
-                _btn(f"📏 Min length: {minlen}"[:28], "scr:minlen"),
                 _btn(f"{Emoji.SETTINGS} Defaults", "scr:defaults"),
             ],
             [_btn(f"{Emoji.SCRAPE} Run scrape", "scr:run")],

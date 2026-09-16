@@ -151,6 +151,9 @@ async def run() -> None:
     registry = AccountRegistry(
         settings.resolved_accounts_file(), settings.resolved_session_dir()
     )
+    recovered = registry.sync_from_disk()
+    if recovered:
+        logger.info("Recovered %d Telegram account(s) from disk", recovered)
     scraper = TelethonScraper(settings, registry)
 
     dispatcher = Dispatcher(storage=MemoryStorage())

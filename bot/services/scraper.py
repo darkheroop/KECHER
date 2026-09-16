@@ -10,11 +10,14 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 ProgressFn = Callable[[int], None]
 
@@ -49,7 +52,8 @@ class ScrapeOptions:
     exclude: list[str] | None = None  # drop messages containing any of these
     sender: str | None = None  # numeric sender id filter
     min_length: int = 0  # minimum text length
-    keyword_mode: str = "contains"  # contains | word | regex
+    keyword_mode: str = "contains"  # contains | word | exact | regex | field
+    field_index: int | None = None  # 1-based field for "field" mode (serial|date|time|count)
     types: set[str] | None = None  # e.g. {"text"} or {"photo", "document"}
     include_media: bool = False
     text_only: bool = True  # plain-text output (no [date] prefix) for cleaning
@@ -110,7 +114,20 @@ def message_matches(datum: MessageDatum, options: ScrapeOptions) -> bool:
         return False
 
     text = datum.text or ""
-    if not keywords_match(text, options.all_keywords(), options.keyword_mode):
+
+    if options.keyword_mode == "field" and options.field_index:
+        from bot.services.cards import extract_cards
+
+        index = options.field_index - 1
+        values: list[str] = []
+        for card in extract_cards(text):
+            fields = [card.serial, card.date, card.time, card.invited]
+            if 0 <= index < len(fields):
+                values.append(fields[index])
+        haystack = " ".join(values) if values else text
+        if not keywords_match(haystack, options.all_keywords(), "contains"):
+            return False
+    elif not keywords_match(text, options.all_keywords(), options.keyword_mode):
         return False
 
     if options.exclude:
@@ -306,6 +323,27 @@ class AccountRegistry:
             accounts.append(target)
         self._save(accounts)
         return target
+
+    def sync_from_disk(self) -> int:
+        """Recover accounts from session files if the JSON registry was lost."""
+        if not self.session_dir.is_dir():
+            return 0
+        added = 0
+        for path in sorted(self.session_dir.glob("*.session")):
+            owner_str, _, label = path.stem.partition("_")
+            if not owner_str.lstrip("-").isdigit() or not label:
+                continue
+            accounts = self.load()
+            if any(a.label == label for a in accounts):
+                continue
+            accounts.append(
+                AccountInfo(label=label, session=label, enabled=True, owner=int(owner_str))
+            )
+            self._save(accounts)
+            added += 1
+        if added:
+            logger.info("Recovered %d account(s) from session files", added)
+        return added
 
     def delete(self, label: str) -> None:
         """Remove an account entry (and its session file, if present)."""

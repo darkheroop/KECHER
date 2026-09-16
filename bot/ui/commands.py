@@ -36,6 +36,7 @@ PUBLIC_COMMANDS: list[BotCommand] = [
     BotCommand(command="scrape", description="Scrape a group/channel by keyword"),
     BotCommand(command="plogin", description="Connect a private account (guide)"),
     BotCommand(command="myaccounts", description="List connected accounts"),
+    BotCommand(command="history", description="Your recent scrapes"),
     BotCommand(command="findbin", description="Extract records for a numeric BIN"),
     BotCommand(command="settings", description="Button / text mode"),
     BotCommand(command="emojis", description="How to customise the emojis"),

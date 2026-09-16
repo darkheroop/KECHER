@@ -20,6 +20,7 @@ DEFAULTS = {
     "sender": "",
     "min_length": 0,
     "keyword_mode": "contains",
+    "field_index": 1,
     "include_media": False,
     "to_channel": True,
     "dry_run": False,

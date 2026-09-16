@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import html
+import json
 from datetime import UTC, datetime, timedelta
 
 from aiogram import F, Router
@@ -18,9 +19,11 @@ from bot.db.repositories import (
     add_authorized_source,
     create_file,
     get_authorized_source,
+    get_bot_setting,
     get_user_settings,
     list_authorized_sources,
     remove_authorized_source,
+    set_bot_setting,
 )
 from bot.handlers.cards import _send_file, _tag
 from bot.handlers.common import ensure_user
@@ -735,6 +738,30 @@ async def scr_format(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer(f"Format: {value.upper()}")
 
 
+@router.callback_query(F.data == "scr:fieldidx")
+async def scr_fieldidx(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(Flow.awaiting_fieldidx)
+    await safe_edit(
+        callback.message,
+        "Which field should keywords match?\n"
+        "1 = serial · 2 = date · 3 = time · 4 = count\n"
+        "(records look like <code>serial|date|time|count</code>)",
+    )
+    await callback.answer()
+
+
+@router.message(Flow.awaiting_fieldidx)
+async def on_fieldidx_text(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    sc = await _load_sc(state)
+    if text.isdigit() and 1 <= int(text) <= 4:
+        sc["field_index"] = int(text)
+        sc["keyword_mode"] = "field"
+    await _save_sc(state, sc)
+    await state.set_state(None)
+    await message.answer(_panel_text(sc, sc.get("source_title", "")), reply_markup=scrape_panel(sc))
+
+
 @router.callback_query(F.data == "scr:minlen")
 async def scr_minlen(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(Flow.awaiting_minlen)
@@ -870,6 +897,7 @@ async def scr_run(
         sender=(sc.get("sender") or "").strip() or None,
         min_length=int(sc.get("min_length") or 0),
         keyword_mode=sc.get("keyword_mode", "contains"),
+        field_index=int(sc.get("field_index") or 0) or None,
         date_from=date_from,
         date_to=date_to,
         text_only=(fmt == "txt"),
@@ -896,6 +924,7 @@ async def scr_run(
             "sender": (sc.get("sender") or "").strip(),
             "min_length": int(sc.get("min_length") or 0),
             "keyword_mode": sc.get("keyword_mode", "contains"),
+            "field_index": int(sc.get("field_index") or 1),
             "include_media": bool(sc.get("include_media")),
             "to_channel": bool(sc.get("to_channel", True)),
         },
@@ -904,6 +933,7 @@ async def scr_run(
 
     sources = sources[: max(1, settings.scrape_max_sources)]
     results: list[tuple[str, object]] = []
+    totals = {"matched": 0, "valid": 0}
     for index, source in enumerate(sources, start=1):
         title = source.title or source.tg_peer_ref
         raw = file_manager.allocate(telegram_id, f"Raw-{index}.txt", subdir="out")
@@ -993,6 +1023,8 @@ async def scr_run(
             reply_markup=clean_prompt(),
         )
         results.append((title, raw_stored.rel_path))
+        totals["matched"] += result.exported
+        totals["valid"] += report.valid
 
         if admin and post_channel:
             try:
@@ -1027,6 +1059,14 @@ async def scr_run(
         )
     else:
         await state.clear()
+
+    with contextlib.suppress(Exception):
+        await _record_history(
+            telegram_id,
+            [s.title or s.tg_peer_ref for s in sources],
+            totals["matched"],
+            totals["valid"],
+        )
 
 
 @router.callback_query(F.data == "scr:doclean")
@@ -1121,3 +1161,56 @@ async def scr_combine(
         except Exception:  # noqa: BLE001
             pass
     await callback.answer()
+
+
+# --------------------------------------------------------------------------- #
+# History
+# --------------------------------------------------------------------------- #
+HIST_KEY = "scrape_hist:{uid}"
+
+
+async def _record_history(
+    telegram_id: int, sources: list[str], matched: int, valid: int
+) -> None:
+    key = HIST_KEY.format(uid=telegram_id)
+    async with session_scope() as session:
+        raw = await get_bot_setting(session, key)
+    items: list = []
+    if raw:
+        with contextlib.suppress(json.JSONDecodeError):
+            items = json.loads(raw)
+    items.insert(
+        0,
+        {
+            "ts": datetime.now(UTC).strftime("%Y-%m-%d %H:%M"),
+            "sources": sources[:4],
+            "matched": matched,
+            "valid": valid,
+        },
+    )
+    async with session_scope() as session:
+        await set_bot_setting(session, key, json.dumps(items[:10]))
+
+
+@router.message(Command("history"))
+async def cmd_history(message: Message) -> None:
+    assert message.from_user is not None
+    key = HIST_KEY.format(uid=message.from_user.id)
+    async with session_scope() as session:
+        raw = await get_bot_setting(session, key)
+    items = []
+    if raw:
+        with contextlib.suppress(json.JSONDecodeError):
+            items = json.loads(raw)
+    if not items:
+        await message.answer(f"{Emoji.SEARCH} No scrape history yet.")
+        return
+    lines = [f"{Emoji.SEARCH} <b>Scrape history</b>", DIVIDER]
+    for entry in items[:10]:
+        srcs = ", ".join(entry.get("sources") or []) or "-"
+        lines.append(
+            f"<code>{html.escape(str(entry.get('ts', '')))}</code>  "
+            f"matched <b>{entry.get('matched', 0):,}</b> · valid <b>{entry.get('valid', 0):,}</b>\n"
+            f"   {html.escape(srcs)}"
+        )
+    await message.answer("\n".join(lines))
