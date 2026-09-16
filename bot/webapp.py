@@ -104,20 +104,29 @@ async def _app_index(request: web.Request) -> web.StreamResponse:
     return web.Response(text=PAGE, content_type="text/html")
 
 
+async def _redirect_slash(request: web.Request) -> web.StreamResponse:
+    raise web.HTTPPermanentRedirect(location="/miniapp/")
+
+
 def create_app() -> web.Application:
     app = web.Application()
     app.router.add_get("/", _app_index)
-    app.router.add_get("/miniapp", _app_index)
+    app.router.add_get("/miniapp", _redirect_slash)
     app.router.add_get("/miniapp/", _app_index)
     if DIST_DIR.is_dir():
         app.router.add_static("/miniapp/assets", DIST_DIR / "assets", name="assets")
+        app.router.add_static("/assets", DIST_DIR / "assets", name="assets_alt")
     app.router.add_get("/healthz", _healthz)
     return app
 
 
 def webapp_url(settings: Settings) -> str:
     base = (settings.public_base_url or "").strip().rstrip("/")
-    return f"{base}/miniapp" if base else ""
+    if not base:
+        return ""
+    if not base.startswith(("http://", "https://")):
+        base = "https://" + base
+    return f"{base}/miniapp/"
 
 
 async def start_webapp(settings: Settings) -> web.AppRunner | None:
