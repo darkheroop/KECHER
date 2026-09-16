@@ -44,8 +44,16 @@ class ScrapeOptions:
     date_from: datetime | None = None
     date_to: datetime | None = None
     keyword: str | None = None
+    keywords: list[str] | None = None  # any-of, case-insensitive
     types: set[str] | None = None  # e.g. {"text"} or {"photo", "document"}
     include_media: bool = False
+    text_only: bool = True  # plain-text output (no [date] prefix) for cleaning
+
+    def all_keywords(self) -> list[str]:
+        found = [k.strip() for k in (self.keywords or []) if k and k.strip()]
+        if self.keyword and self.keyword.strip():
+            found.append(self.keyword.strip())
+        return found
 
 
 @dataclass(slots=True)
@@ -62,8 +70,10 @@ def message_matches(datum: MessageDatum, options: ScrapeOptions) -> bool:
     if options.date_to is not None and datum.date > options.date_to:
         return False
 
-    if options.keyword:
-        if options.keyword.casefold() not in (datum.text or "").casefold():
+    words = options.all_keywords()
+    if words:
+        haystack = (datum.text or "").casefold()
+        if not any(word.casefold() in haystack for word in words):
             return False
 
     if options.types:
@@ -89,7 +99,9 @@ def _datum_to_dict(datum: MessageDatum) -> dict:
     }
 
 
-def _text_line(datum: MessageDatum) -> str:
+def _text_line(datum: MessageDatum, *, text_only: bool = False) -> str:
+    if text_only:
+        return (datum.text or "").strip()
     text = (datum.text or "").replace("\r", " ").replace("\n", " ").strip()
     prefix = f"[{datum.date.isoformat()}]"
     if datum.sender_id is not None:
@@ -134,7 +146,7 @@ def scrape_to_file(
             if message_matches(datum, options):
                 if fmt == "txt":
                     assert handle is not None
-                    handle.write(_text_line(datum) + "\n")
+                    handle.write(_text_line(datum, text_only=options.text_only) + "\n")
                 elif fmt == "csv":
                     assert writer is not None
                     writer.writerow(_datum_to_dict(datum))

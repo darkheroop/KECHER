@@ -32,6 +32,8 @@ from bot.security.ratelimit import SlidingWindowLimiter
 from bot.services.file_manager import FileManager
 from bot.services.forwarder import forward_pending_files
 from bot.services.retention import reap_expired_files
+from bot.services.scraper import AccountRegistry
+from bot.services.telegram_client import TelethonScraper
 from bot.ui.commands import configure_bot
 from bot.ui.emoji import configure_custom
 
@@ -122,6 +124,10 @@ async def run() -> None:
 
     bot = build_bot(settings)
     files = FileManager(settings)
+    registry = AccountRegistry(
+        settings.resolved_accounts_file(), settings.resolved_session_dir()
+    )
+    scraper = TelethonScraper(settings, registry)
 
     dispatcher = Dispatcher(storage=MemoryStorage())
     dispatcher.include_routers(*routers)
@@ -159,7 +165,9 @@ async def run() -> None:
 
     logger.info("Starting bot (environment=%s)", settings.environment)
     try:
-        await dispatcher.start_polling(bot, settings=settings, file_manager=files)
+        await dispatcher.start_polling(
+            bot, settings=settings, file_manager=files, scraper=scraper
+        )
     finally:
         reaper.cancel()
         forwarder.cancel()

@@ -101,12 +101,20 @@ _custom_ids: dict[str, str] = {}
 
 
 def configure_custom(ids: Mapping[str, str] | None) -> None:
-    """Register custom emoji ids (name -> Telegram custom emoji id)."""
+    """Register custom emoji ids.
+
+    Accepts keys like ``SUCCESS`` and also grouped keys like ``A/B`` (e.g.
+    ``SCRAPE/FIND`` or ``DEDUP/RECYCLE``), applying the id to every known name.
+    """
     _custom_ids.clear()
-    if ids:
-        for key, value in ids.items():
-            name = str(key).upper()
-            if name in _SPECS and value:
+    if not ids:
+        return
+    for raw_key, value in ids.items():
+        if not value:
+            continue
+        for part in str(raw_key).upper().split("/"):
+            name = part.strip()
+            if name in _SPECS:
                 _custom_ids[name] = str(value)
 
 

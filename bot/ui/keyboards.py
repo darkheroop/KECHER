@@ -30,13 +30,21 @@ def main_menu() -> InlineKeyboardMarkup:
     )
 
 
-def settings_menu(ui_mode: str, is_admin: bool = False) -> InlineKeyboardMarkup:
+def settings_menu(
+    ui_mode: str, is_admin: bool = False, cleanup_minutes: int = 10, language: str = "en"
+) -> InlineKeyboardMarkup:
     button = ui_mode == UIMode.BUTTONS.value
     rows = [
         [
             _btn(_mark(f"{Emoji.BUTTON_MODE} Button", button), "set:mode:button"),
             _btn(_mark(f"{Emoji.TEXT_MODE} Text", not button), "set:mode:text"),
-        ]
+        ],
+        [
+            _btn(_mark("5 min", cleanup_minutes == 5), "set:clean:5"),
+            _btn(_mark("10 min", cleanup_minutes == 10), "set:clean:10"),
+            _btn(_mark("30 min", cleanup_minutes == 30), "set:clean:30"),
+        ],
+        [_btn(_mark("English", language == "en"), "set:lang:en")],
     ]
     if is_admin:
         rows.append([_btn(f"{Emoji.ADMIN} Admin Panel", "adm:panel:home")])
@@ -68,6 +76,55 @@ def split_choices(file_id: int) -> InlineKeyboardMarkup:
 def back_to_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[[_btn(f"{Emoji.BACK} Back", "menu:home")]]
+    )
+
+
+def scrape_sources(sources: list[tuple[int, str]]) -> InlineKeyboardMarkup:
+    rows = [[_btn(title, f"scr:src:{sid}")] for sid, title in sources]
+    rows.append([_btn("➕ Add source", "scr:add")])
+    rows.append([_btn(f"{Emoji.BACK} Back", "menu:home")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def scrape_panel(state: dict) -> InlineKeyboardMarkup:
+    keywords = state.get("keywords") or []
+    keyword_label = ", ".join(keywords) if keywords else "any"
+    limit = state.get("limit", 100)
+    mode = state.get("mode", "messages")
+    autoclean = state.get("autoclean", True)
+    dates = state.get("dates", "none")
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_btn(f"{Emoji.FIND} Keywords: {keyword_label}"[:60], "scr:kw")],
+            [
+                _btn(_mark("100", limit == 100), "scr:limit:100"),
+                _btn(_mark("500", limit == 500), "scr:limit:500"),
+                _btn(_mark("1k", limit == 1000), "scr:limit:1000"),
+                _btn(_mark("All", not limit), "scr:limit:0"),
+            ],
+            [
+                _btn(_mark("Messages", mode == "messages"), "scr:mode:messages"),
+                _btn(_mark("Cards", mode == "cards"), "scr:mode:cards"),
+            ],
+            [
+                _btn(_mark("Auto-clean", autoclean), "scr:autoclean"),
+                _btn(_mark("7d", dates == "7"), "scr:dates:7"),
+                _btn(_mark("30d", dates == "30"), "scr:dates:30"),
+                _btn("Custom dates", "scr:dates:custom"),
+            ],
+            [_btn(f"{Emoji.SCRAPE} Run scrape", "scr:run")],
+            [_btn(f"{Emoji.CANCEL} Cancel", "scr:cancel")],
+        ]
+    )
+
+
+def account_help() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_btn("📖 Connect an account", "scr:help")],
+            [_btn(f"{Emoji.BACK} Back", "menu:home")],
+        ]
     )
 
 

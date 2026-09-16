@@ -11,3 +11,6 @@ class Flow(StatesGroup):
     awaiting_file = State()
     awaiting_text = State()
     awaiting_dates = State()
+    awaiting_source = State()
+    awaiting_keywords = State()
+    awaiting_scrape_dates = State()

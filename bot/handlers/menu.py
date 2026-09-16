@@ -51,6 +51,9 @@ TEXT_GUIDE = (
     f"{Emoji.PAGE} <code>/addfile</code> — add to merge queue\n"
     f"{Emoji.MERGE} <code>/merge</code> — merge queued files\n"
     f"<code>/clearqueue</code> — clear merge queue\n\n"
+    f"{Emoji.SCRAPE} <code>/scrape</code> — scrape a group/channel\n"
+    f"{Emoji.LOGIN} <code>/plogin</code> — connect a private account\n"
+    f"{Emoji.ACCOUNT} <code>/myaccounts</code> — list accounts\n\n"
     f"{Emoji.SETTINGS} <code>/settings</code> — change UI mode\n"
     f"{Emoji.ADMIN} <code>/admin</code> — admin panel\n\n"
     "⚠️ Reply to a .txt file when using file commands."
@@ -207,30 +210,39 @@ async def menu_instruction(callback: CallbackQuery) -> None:
 # --------------------------------------------------------------------------- #
 # Settings
 # --------------------------------------------------------------------------- #
-def _settings_text(ui_mode: str) -> str:
+def _settings_text(ui_mode: str, cleanup_minutes: int) -> str:
     current = "TEXT" if ui_mode == UIMode.COMMANDS.value else "BUTTON"
     return (
-        f"{Emoji.SETTINGS} <b>Settings</b>\n\n"
-        f"Current: <b>{current}</b>\n\n"
-        "Choose how the bot shows actions."
+        f"{Emoji.SETTINGS} <b>Settings</b>\n{DIVIDER}\n"
+        f"Mode · <b>{current}</b>\n"
+        f"Cleanup · <b>{cleanup_minutes} min</b>\n"
+        f"Language · <b>English</b>"
     )
+
+
+async def _settings_view(obj, settings: Settings):  # noqa: ANN001
+    async with session_scope() as session:
+        user = await ensure_user(session, obj.from_user)
+        row = await get_user_settings(session, user.id)
+        admin = is_admin(user, settings)
+    return row, settings_menu(row.ui_mode, admin, row.cleanup_minutes, row.language)
 
 
 @router.message(Command("settings"))
 async def cmd_settings(message: Message, settings: Settings) -> None:
-    ui_mode = await _mode(message)
-    admin = await _is_admin(message, settings)
-    await message.answer(_settings_text(ui_mode), reply_markup=settings_menu(ui_mode, admin))
+    row, keyboard = await _settings_view(message, settings)
+    await message.answer(
+        _settings_text(row.ui_mode, row.cleanup_minutes), reply_markup=keyboard
+    )
 
 
 @router.callback_query(F.data == "settings:open")
 async def settings_open(callback: CallbackQuery, settings: Settings) -> None:
-    ui_mode = await _mode(callback)
-    admin = await _is_admin(callback, settings)
+    row, keyboard = await _settings_view(callback, settings)
     await safe_edit(
         callback.message,
-        _settings_text(ui_mode),
-        reply_markup=settings_menu(ui_mode, admin),
+        _settings_text(row.ui_mode, row.cleanup_minutes),
+        reply_markup=keyboard,
     )
     await callback.answer()
 
@@ -242,10 +254,37 @@ async def set_mode(callback: CallbackQuery, settings: Settings) -> None:
     async with session_scope() as session:
         user = await ensure_user(session, callback.from_user)
         await update_user_settings(session, user.id, ui_mode=ui_mode)
-    admin = await _is_admin(callback, settings)
+    row, keyboard = await _settings_view(callback, settings)
     await safe_edit(
         callback.message,
-        _settings_text(ui_mode),
-        reply_markup=settings_menu(ui_mode, admin),
+        _settings_text(row.ui_mode, row.cleanup_minutes),
+        reply_markup=keyboard,
     )
     await callback.answer("Saved")
+
+
+@router.callback_query(F.data.startswith("set:clean:"))
+async def set_cleanup(callback: CallbackQuery, settings: Settings) -> None:
+    value = (callback.data or "").rsplit(":", 1)[-1]
+    if value.isdigit():
+        async with session_scope() as session:
+            user = await ensure_user(session, callback.from_user)
+            await update_user_settings(session, user.id, cleanup_minutes=int(value))
+    row, keyboard = await _settings_view(callback, settings)
+    await safe_edit(
+        callback.message,
+        _settings_text(row.ui_mode, row.cleanup_minutes),
+        reply_markup=keyboard,
+    )
+    await callback.answer("Saved")
+
+
+@router.callback_query(F.data == "set:lang:en")
+async def set_language(callback: CallbackQuery, settings: Settings) -> None:
+    row, keyboard = await _settings_view(callback, settings)
+    await safe_edit(
+        callback.message,
+        _settings_text(row.ui_mode, row.cleanup_minutes),
+        reply_markup=keyboard,
+    )
+    await callback.answer("English")

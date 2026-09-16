@@ -128,6 +128,20 @@ class FileManager:
             sha256=self.sha256_of(allocated.path),
         )
 
+    def finalize_path(self, telegram_id: int, path: Path) -> StoredFile:
+        """Wrap an existing file inside the user's sandbox as a StoredFile."""
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        root = self.user_root(telegram_id, create=False)
+        rel_path = path.resolve().relative_to(root.resolve()).as_posix()
+        return StoredFile(
+            path=path,
+            rel_path=rel_path,
+            safe_name=path.name,
+            size_bytes=path.stat().st_size,
+            sha256=self.sha256_of(path),
+        )
+
     # -- deletion ----------------------------------------------------------- #
     def delete(self, telegram_id: int, rel_path: str) -> bool:
         """Delete a sandbox-relative file. Returns True if something was removed."""
