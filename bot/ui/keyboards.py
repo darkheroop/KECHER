@@ -119,16 +119,21 @@ def scrape_panel(state: dict) -> InlineKeyboardMarkup:
 
 
 def scrape_sources(
-    sources: list[tuple[int, str]], *, manage: bool = False
+    sources: list[tuple[int, str]],
+    *,
+    selected: set[int] | None = None,
+    manage: bool = False,
 ) -> InlineKeyboardMarkup:
+    selected = selected or set()
     rows = []
     for sid, title in sources:
         if manage:
-            rows.append(
-                [_btn(f"🗑 Remove · {title}"[:60], f"scr:delsrc:{sid}")]
-            )
+            rows.append([_btn(f"🗑 Remove · {title}"[:60], f"scr:delsrc:{sid}")])
         else:
-            rows.append([_btn(title, f"scr:src:{sid}")])
+            box = "✅" if sid in selected else "☐"
+            rows.append([_btn(f"{box} {title}"[:60], f"scr:toggle:{sid}")])
+    if not manage and selected:
+        rows.append([_btn(f"{Emoji.SCRAPE} Continue ({len(selected)})", "scr:continue")])
     rows.append([_btn("➕ Add source", "scr:add")])
     if sources:
         rows.append(
@@ -141,6 +146,15 @@ def scrape_sources(
         )
     rows.append([_btn(f"{Emoji.BACK} Back", "menu:home")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def combine_prompt(count: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_btn(f"🔗 Combine into one .txt", "scr:combine:yes")],
+            [_btn("✅ Keep separate", "scr:combine:no")],
+        ]
+    )
 
 
 def api_setup() -> InlineKeyboardMarkup:

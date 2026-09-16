@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, FSInputFile, Message
 
 from bot.config import Settings
 from bot.db.engine import session_scope
@@ -22,15 +22,22 @@ from bot.db.repositories import (
     list_authorized_sources,
     remove_authorized_source,
 )
-from bot.handlers.cards import _send_file
+from bot.handlers.cards import _send_file, _tag
 from bot.handlers.common import ensure_user
 from bot.handlers.states import Flow
+from bot.jobs.progress import ProgressReporter, TelegramNotifier
 from bot.security.access import is_admin
-from bot.services.cards import clean_cards
+from bot.services.cards import clean_cards, merge_files
 from bot.services.file_manager import FileManager
 from bot.services.scraper import ScrapeOptions, is_scraper_available
 from bot.ui.emoji import Emoji
-from bot.ui.keyboards import account_help, api_setup, scrape_panel, scrape_sources
+from bot.ui.keyboards import (
+    account_help,
+    api_setup,
+    combine_prompt,
+    scrape_panel,
+    scrape_sources,
+)
 from bot.ui.render import safe_edit
 
 router = Router(name="scrape")
@@ -64,7 +71,20 @@ DEFAULT_STATE = {
     "dates": "none",
     "keywords": [],
     "include_media": False,
+    "selected": [],
 }
+
+
+async def _animate(reporter: ProgressReporter, stop: asyncio.Event, label: str) -> None:
+    """Indeterminate loading bar while a blocking network step runs."""
+    percent = 5
+    while not stop.is_set():
+        await reporter.update(percent, label=label, force=True)
+        percent = min(95, percent + 6)
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=1.2)
+        except asyncio.TimeoutError:
+            continue
 
 
 def _api_ready(scraper, settings: Settings) -> bool:  # noqa: ANN001
@@ -144,8 +164,11 @@ async def _scrape_entry(reply: Message, tg_user, state: FSMContext, scraper, set
         user = await ensure_user(session, tg_user)
         sources = await list_authorized_sources(session, user.id)
     await reply.answer(
-        f"{Emoji.SCRAPE} <b>Scrape</b>\n\nConnected ✅ — choose a source, or add one:",
-        reply_markup=scrape_sources([(s.id, s.title or s.tg_peer_ref) for s in sources]),
+        f"{Emoji.SCRAPE} <b>Scrape</b>\n{DIVIDER}\n"
+        "Connected ✅ — tap one or more sources, then Continue:",
+        reply_markup=scrape_sources(
+            [(s.id, s.title or s.tg_peer_ref) for s in sources], selected=set()
+        ),
     )
 
 
@@ -336,21 +359,51 @@ async def on_source_text(message: Message, state: FSMContext, scraper) -> None: 
 # --------------------------------------------------------------------------- #
 # Options
 # --------------------------------------------------------------------------- #
-@router.callback_query(F.data.startswith("scr:src:"))
-async def scr_pick_source(callback: CallbackQuery, state: FSMContext) -> None:
+async def _sources_kb(tg_user, state: FSMContext, *, manage: bool = False):  # noqa: ANN001
+    async with session_scope() as session:
+        user = await ensure_user(session, tg_user)
+        sources = await list_authorized_sources(session, user.id)
+    sc = await _load_sc(state)
+    pairs = [(s.id, s.title or s.tg_peer_ref) for s in sources]
+    return scrape_sources(pairs, selected=set(sc.get("selected") or []), manage=manage)
+
+
+@router.callback_query(F.data.startswith("scr:toggle:"))
+async def scr_toggle(callback: CallbackQuery, state: FSMContext) -> None:
     raw = (callback.data or "").rsplit(":", 1)[-1]
     if not raw.isdigit():
         await callback.answer("Invalid", show_alert=True)
         return
-    async with session_scope() as session:
-        user = await ensure_user(session, callback.from_user)
-        source = await get_authorized_source(session, user.id, int(raw))
-        title = (source.title or source.tg_peer_ref) if source else None
-    if source is None:
-        await callback.answer("Source not found", show_alert=True)
-        return
     sc = await _load_sc(state)
-    sc["source_id"] = int(raw)
+    selected = [int(x) for x in (sc.get("selected") or [])]
+    sid = int(raw)
+    if sid in selected:
+        selected.remove(sid)
+    else:
+        selected.append(sid)
+    sc["selected"] = selected
+    await _save_sc(state, sc)
+    if callback.message is not None:
+        await callback.message.edit_reply_markup(
+            reply_markup=await _sources_kb(callback.from_user, state)
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "scr:continue")
+async def scr_continue(callback: CallbackQuery, state: FSMContext) -> None:
+    sc = await _load_sc(state)
+    ids = sc.get("selected") or []
+    if not ids:
+        await callback.answer("Pick at least one source", show_alert=True)
+        return
+    if len(ids) == 1:
+        async with session_scope() as session:
+            user = await ensure_user(session, callback.from_user)
+            source = await get_authorized_source(session, user.id, int(ids[0]))
+            title = (source.title or source.tg_peer_ref) if source else "source"
+    else:
+        title = f"{len(ids)} sources"
     sc["source_title"] = title
     await _save_sc(state, sc)
     await safe_edit(callback.message, _panel_text(sc, title), reply_markup=scrape_panel(sc))
@@ -434,30 +487,20 @@ async def on_scrape_dates(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "scr:sources")
 async def scr_sources_manage(callback: CallbackQuery, state: FSMContext) -> None:
-    async with session_scope() as session:
-        user = await ensure_user(session, callback.from_user)
-        sources = await list_authorized_sources(session, user.id)
     await safe_edit(
         callback.message,
         f"{Emoji.SCRAPE} <b>Your sources</b>\n\nTap a source to remove it:",
-        reply_markup=scrape_sources(
-            [(s.id, s.title or s.tg_peer_ref) for s in sources], manage=True
-        ),
+        reply_markup=await _sources_kb(callback.from_user, state, manage=True),
     )
     await callback.answer()
 
 
 @router.callback_query(F.data == "scr:back")
 async def scr_sources_back(callback: CallbackQuery, state: FSMContext) -> None:
-    async with session_scope() as session:
-        user = await ensure_user(session, callback.from_user)
-        sources = await list_authorized_sources(session, user.id)
     await safe_edit(
         callback.message,
-        f"{Emoji.SCRAPE} Choose a source, or add one:",
-        reply_markup=scrape_sources(
-            [(s.id, s.title or s.tg_peer_ref) for s in sources]
-        ),
+        f"{Emoji.SCRAPE} Tap one or more sources, then Continue:",
+        reply_markup=await _sources_kb(callback.from_user, state),
     )
     await callback.answer()
 
@@ -469,15 +512,10 @@ async def scr_del_source(callback: CallbackQuery, state: FSMContext) -> None:
         async with session_scope() as session:
             user = await ensure_user(session, callback.from_user)
             await remove_authorized_source(session, user.id, int(raw))
-            sources = await list_authorized_sources(session, user.id)
-    else:
-        sources = []
     await safe_edit(
         callback.message,
         f"{Emoji.SCRAPE} <b>Your sources</b>\n\nRemove another, or add a new one:",
-        reply_markup=scrape_sources(
-            [(s.id, s.title or s.tg_peer_ref) for s in sources], manage=True
-        ),
+        reply_markup=await _sources_kb(callback.from_user, state, manage=True),
     )
     await callback.answer("Removed")
 
@@ -536,40 +574,38 @@ async def scr_run(
 ) -> None:
     sc = await _load_sc(state)
     tg_user = callback.from_user
-    if not sc.get("source_id"):
-        await callback.answer("Pick a source first", show_alert=True)
+    selected = [int(x) for x in (sc.get("selected") or [])]
+    if not selected:
+        await callback.answer("Pick at least one source", show_alert=True)
         return
     if not scraper.user_connected(tg_user.id):
         await callback.answer("Connect your account first.", show_alert=True)
         return
 
     label = scraper.label_for(tg_user.id)
+    now = datetime.now(UTC)
     async with session_scope() as session:
         user = await ensure_user(session, tg_user)
-        source = await get_authorized_source(session, user.id, int(sc["source_id"]))
         user_settings = await get_user_settings(session, user.id)
-    if source is None:
-        await callback.answer("Source not found", show_alert=True)
+        admin = is_admin(user, settings)
+        sources = []
+        for sid in selected:
+            src = await get_authorized_source(session, user.id, sid)
+            if src is not None:
+                sources.append(src)
+    if not sources:
+        await callback.answer("Sources not found", show_alert=True)
         return
 
     keywords = sc.get("keywords") or []
     limit = int(sc.get("limit") or 0)
     dates = sc.get("dates", "none")
-    now = datetime.now(UTC)
     date_from = _parse_dt(sc.get("date_from"))
     date_to = _parse_dt(sc.get("date_to"))
     if dates == "7":
         date_from = now - timedelta(days=7)
     elif dates == "30":
         date_from = now - timedelta(days=30)
-
-    label_name = "Scrape " + ("+".join(keywords) if keywords else "all")
-    telegram_id = tg_user.id
-    raw = file_manager.allocate(telegram_id, f"{label_name}.txt", subdir="out")
-    status = await callback.message.answer(
-        f"{Emoji.SCRAPE} Scraping <b>{html.escape(source.title or source.tg_peer_ref)}</b>…"
-    )
-    await callback.answer()
 
     options = ScrapeOptions(
         limit=limit or 1_000_000,
@@ -579,44 +615,138 @@ async def scr_run(
         text_only=True,
         include_media=bool(sc.get("include_media")),
     )
-    try:
-        result = await scraper.scrape(
-            label=label, peer_ref=source.tg_peer_ref, out=raw.path, options=options, fmt="txt"
+    base = "Scrape " + ("+".join(keywords) if keywords else "all")
+    telegram_id = tg_user.id
+    channel = (settings.forward_channel_id or "").strip()
+    await callback.answer()
+
+    results: list[tuple[str, object]] = []
+    for source in sources:
+        title = source.title or source.tg_peer_ref
+        raw = file_manager.allocate(telegram_id, f"{base} - {title}.txt", subdir="out")
+        status = await callback.message.answer(
+            f"{Emoji.SCRAPE} Scraping <b>{html.escape(title)}</b>…"
         )
-    except Exception as exc:  # noqa: BLE001
-        await safe_edit(status, f"{Emoji.ERROR} Scrape failed: <code>{type(exc).__name__}</code>")
+        reporter = ProgressReporter(
+            TelegramNotifier(callback.bot),
+            callback.message.chat.id,
+            status.message_id,
+            min_interval=1.2,
+        )
+        stop = asyncio.Event()
+        animation = asyncio.create_task(_animate(reporter, stop, f"Scraping {title}"))
+        try:
+            result = await scraper.scrape(
+                label=label,
+                peer_ref=source.tg_peer_ref,
+                out=raw.path,
+                options=options,
+                fmt="txt",
+            )
+        except Exception as exc:  # noqa: BLE001
+            stop.set()
+            await animation
+            await safe_edit(status, f"{Emoji.ERROR} {html.escape(title)}: <code>{type(exc).__name__}</code>")
+            continue
+        stop.set()
+        await animation
+
+        cleaned_alloc = file_manager.allocate(
+            telegram_id, f"{base} - {title} Cleaned.txt", subdir="out"
+        )
+        report = await asyncio.to_thread(clean_cards, raw.path, cleaned_alloc.path)
+        cleaned = file_manager.finalize(cleaned_alloc)
+
+        await safe_edit(
+            status,
+            f"{Emoji.SUCCESS} <b>{html.escape(title)}</b>\n"
+            f"Scanned {result.scanned:,} · matched {result.exported:,} · valid {report.valid:,}",
+        )
+        await callback.message.answer_document(
+            FSInputFile(cleaned.path, filename=_tag(cleaned.safe_name)),
+            caption=f"🧹 {title} · {report.valid:,} record(s)",
+        )
+        async with session_scope() as session:
+            await create_file(
+                session,
+                user_id=user.id,
+                original_name=cleaned.safe_name,
+                safe_name=cleaned.safe_name,
+                rel_path=cleaned.rel_path,
+                size_bytes=cleaned.size_bytes,
+                sha256=cleaned.sha256,
+                expires_at=now + timedelta(minutes=max(1, user_settings.cleanup_minutes)),
+            )
+        results.append((title, cleaned.rel_path))
+
+        if admin and channel:
+            try:
+                await callback.bot.send_document(
+                    channel,
+                    FSInputFile(raw.path, filename=_tag(raw.path.name)),
+                    caption=f"📥 Raw · {title} · {result.exported:,} matched",
+                )
+                sent = await callback.bot.send_document(
+                    channel,
+                    FSInputFile(cleaned.path, filename=_tag(cleaned.safe_name)),
+                    caption=f"🧹 Cleaned · {title} · {report.valid:,} record(s)",
+                )
+                await callback.bot.pin_chat_message(
+                    chat_id=channel, message_id=sent.message_id, disable_notification=True
+                )
+            except Exception:  # noqa: BLE001 - channel delivery is best-effort
+                pass
+
+    if len(results) > 1:
+        await state.update_data(combine_paths=results)
+        await callback.message.answer(
+            f"{Emoji.MERGE} Combine the {len(results)} cleaned file(s) into one .txt?",
+            reply_markup=combine_prompt(len(results)),
+        )
+    else:
+        await state.clear()
+
+
+@router.callback_query(F.data.startswith("scr:combine:"))
+async def scr_combine(
+    callback: CallbackQuery, state: FSMContext, file_manager: FileManager, settings: Settings
+) -> None:
+    choice = (callback.data or "").rsplit(":", 1)[-1]
+    data = await state.get_data()
+    results = data.get("combine_paths") or []
+    await state.clear()
+    if choice != "yes" or len(results) < 2:
+        await safe_edit(callback.message, f"{Emoji.SUCCESS} Done.", reply_markup=None)
+        await callback.answer()
         return
 
-    final_path = raw.path
-    extra = ""
-    if sc.get("mode") == "cards" or sc.get("autoclean", True):
-        cleaned = file_manager.allocate(telegram_id, f"{label_name} Cleaned.txt", subdir="out")
-        report = await asyncio.to_thread(clean_cards, raw.path, cleaned.path)
-        final_path = cleaned.path
-        extra = f"\n✅ {report.valid:,} valid records"
-
-    stored = file_manager.finalize_path(telegram_id, final_path)
-    async with session_scope() as session:
-        await create_file(
-            session,
-            user_id=user.id,
-            original_name=stored.safe_name,
-            safe_name=stored.safe_name,
-            rel_path=stored.rel_path,
-            size_bytes=stored.size_bytes,
-            sha256=stored.sha256,
-            expires_at=now + timedelta(minutes=max(1, user_settings.cleanup_minutes)),
-        )
-
+    telegram_id = callback.from_user.id
+    paths = [
+        file_manager.resolve(telegram_id, rel, create_parent=False) for _, rel in results
+    ]
+    out = file_manager.allocate(telegram_id, "Scrape combined Cleaned.txt", subdir="out")
+    status = await callback.message.answer(f"{Emoji.MERGE} Combining {len(paths)} file(s)…")
+    report = await asyncio.to_thread(merge_files, paths, out.path)
+    stored = file_manager.finalize(out)
     await safe_edit(
         status,
-        f"{Emoji.SUCCESS} <b>Scrape complete</b>\n"
-        f"Scanned {result.scanned:,} · matched {result.exported:,}{extra}",
+        f"{Emoji.SUCCESS} <b>Combined</b> · {report.lines:,} line(s) · {stored.size_bytes:,} bytes",
     )
-    await _send_file(
-        callback.message,
-        stored.path,
-        stored.safe_name,
-        f"{Emoji.SCRAPE} {label_name}\n{result.exported:,} message(s)",
+    await callback.message.answer_document(
+        FSInputFile(stored.path, filename=_tag(stored.safe_name)),
+        caption=f"🔗 Combined · {report.lines:,} line(s)",
     )
-    await state.clear()
+    channel = (settings.forward_channel_id or "").strip()
+    if channel:
+        try:
+            sent = await callback.bot.send_document(
+                channel,
+                FSInputFile(stored.path, filename=_tag(stored.safe_name)),
+                caption=f"🔗 Combined · {report.lines:,} line(s)",
+            )
+            await callback.bot.pin_chat_message(
+                chat_id=channel, message_id=sent.message_id, disable_notification=True
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    await callback.answer()
