@@ -17,8 +17,8 @@ charset-normalizer>=3.4.0
 aiofiles>=24.1.0
 
 # --- Optional: authorized Telegram user-account access (Telethon) ---
-# Required only for /scrape and /private_scrape. Uncomment to enable.
-# telethon>=1.36
+# Required for /scrape. Installed by default so scraping works out of the box.
+telethon>=1.36
 
 # --- Testing ---
 pytest>=8.3
