@@ -20,3 +20,6 @@ class Flow(StatesGroup):
     awaiting_limit = State()
     awaiting_api_id = State()
     awaiting_api_hash = State()
+    awaiting_exclude = State()
+    awaiting_sender = State()
+    awaiting_minlen = State()

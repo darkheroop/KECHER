@@ -39,6 +39,7 @@ from bot.ui.keyboards import (
     api_setup,
     clean_prompt,
     combine_prompt,
+    defaults_menu,
     scrape_panel,
     scrape_sources,
 )
@@ -634,6 +635,105 @@ async def scr_media(callback: CallbackQuery, state: FSMContext) -> None:
     sc["include_media"] = not sc.get("include_media", False)
     await _save_sc(state, sc)
     await safe_edit(callback.message, _panel_text(sc, sc.get("source_title", "")), reply_markup=scrape_panel(sc))
+    await callback.answer()
+
+
+@router.callback_query(F.data == "scr:exclude")
+async def scr_exclude(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(Flow.awaiting_exclude)
+    await safe_edit(
+        callback.message,
+        "🚫 Send words to <b>exclude</b> (comma-separated). Messages containing any "
+        "of them are dropped. Send <code>-</code> to clear.",
+    )
+    await callback.answer()
+
+
+@router.message(Flow.awaiting_exclude)
+async def on_exclude_text(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    sc = await _load_sc(state)
+    sc["exclude"] = [] if text in {"", "-"} else [w.strip() for w in text.split(",") if w.strip()]
+    await _save_sc(state, sc)
+    await state.set_state(None)
+    await message.answer(_panel_text(sc, sc.get("source_title", "")), reply_markup=scrape_panel(sc))
+
+
+@router.callback_query(F.data == "scr:sender")
+async def scr_sender(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(Flow.awaiting_sender)
+    await safe_edit(
+        callback.message,
+        "👤 Send a numeric <b>sender id</b> to keep only that sender. "
+        "Send <code>-</code> to clear.",
+    )
+    await callback.answer()
+
+
+@router.message(Flow.awaiting_sender)
+async def on_sender_text(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    sc = await _load_sc(state)
+    sc["sender"] = "" if text in {"", "-"} else text
+    await _save_sc(state, sc)
+    await state.set_state(None)
+    await message.answer(_panel_text(sc, sc.get("source_title", "")), reply_markup=scrape_panel(sc))
+
+
+@router.callback_query(F.data == "scr:minlen")
+async def scr_minlen(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(Flow.awaiting_minlen)
+    await safe_edit(
+        callback.message,
+        "📏 Send the minimum message length to keep (e.g. <b>20</b>). Send <code>0</code> to clear.",
+    )
+    await callback.answer()
+
+
+@router.message(Flow.awaiting_minlen)
+async def on_minlen_text(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    sc = await _load_sc(state)
+    sc["min_length"] = int(text) if text.isdigit() else 0
+    await _save_sc(state, sc)
+    await state.set_state(None)
+    await message.answer(_panel_text(sc, sc.get("source_title", "")), reply_markup=scrape_panel(sc))
+
+
+@router.callback_query(F.data == "scr:chan")
+async def scr_channel_toggle(callback: CallbackQuery, state: FSMContext) -> None:
+    sc = await _load_sc(state)
+    sc["to_channel"] = not sc.get("to_channel", True)
+    await _save_sc(state, sc)
+    await safe_edit(callback.message, _panel_text(sc, sc.get("source_title", "")), reply_markup=scrape_panel(sc))
+    await callback.answer("Channel " + ("on" if sc["to_channel"] else "off"))
+
+
+@router.callback_query(F.data.startswith("scr:defaults"))
+async def scr_defaults(callback: CallbackQuery, state: FSMContext) -> None:
+    if (callback.data or "").endswith(":reset"):
+        await prefs.save_prefs(callback.from_user.id, dict(prefs.DEFAULTS))
+        sc = dict(prefs.DEFAULTS)
+        sc["source_title"] = ""
+        await _save_sc(state, sc)
+        await safe_edit(
+            callback.message,
+            f"{Emoji.SUCCESS} Defaults reset.",
+            reply_markup=scrape_panel(sc),
+        )
+        await callback.answer("Reset")
+        return
+    sc = await _load_sc(state)
+    text = (
+        f"{Emoji.SETTINGS} <b>Scrape defaults</b>\n{DIVIDER}\n"
+        f"Keywords · <b>{', '.join(sc.get('keywords') or []) or 'any'}</b>\n"
+        f"Exclude · <b>{', '.join(sc.get('exclude') or []) or 'none'}</b>\n"
+        f"Limit · <b>{sc.get('limit') or 'All'}</b>\n"
+        f"Mode · <b>{sc.get('mode')}</b>   Dates · <b>{sc.get('dates')}</b>\n"
+        f"Auto-clean · <b>{sc.get('autoclean')}</b>   Media · <b>{sc.get('include_media')}</b>\n"
+        f"Channel · <b>{sc.get('to_channel')}</b>"
+    )
+    await safe_edit(callback.message, text, reply_markup=defaults_menu())
     await callback.answer()
 
 

@@ -45,6 +45,9 @@ class ScrapeOptions:
     date_to: datetime | None = None
     keyword: str | None = None
     keywords: list[str] | None = None  # any-of, case-insensitive
+    exclude: list[str] | None = None  # drop messages containing any of these
+    sender: str | None = None  # numeric sender id filter
+    min_length: int = 0  # minimum text length
     types: set[str] | None = None  # e.g. {"text"} or {"photo", "document"}
     include_media: bool = False
     text_only: bool = True  # plain-text output (no [date] prefix) for cleaning
@@ -64,17 +67,31 @@ class ScrapeResult:
 
 
 def message_matches(datum: MessageDatum, options: ScrapeOptions) -> bool:
-    """Apply the date / type / keyword filters to one message."""
+    """Apply the date / type / keyword / sender / length filters."""
     if options.date_from is not None and datum.date < options.date_from:
         return False
     if options.date_to is not None and datum.date > options.date_to:
         return False
 
+    text = datum.text or ""
     words = options.all_keywords()
     if words:
-        haystack = (datum.text or "").casefold()
+        haystack = text.casefold()
         if not any(word.casefold() in haystack for word in words):
             return False
+
+    if options.exclude:
+        haystack = text.casefold()
+        if any(word.casefold() in haystack for word in options.exclude if word.strip()):
+            return False
+
+    if options.sender:
+        sender = options.sender.strip().lstrip("-")
+        if sender.isdigit() and str(datum.sender_id or "") != sender:
+            return False
+
+    if options.min_length and len(text.strip()) < options.min_length:
+        return False
 
     if options.types:
         kind = datum.media_type or "text"

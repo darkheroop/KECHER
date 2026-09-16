@@ -7,7 +7,6 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from bot.db.enums import UIMode
 from bot.ui.emoji import Emoji
 
-
 def _btn(text: str, data: str) -> InlineKeyboardButton:
     return InlineKeyboardButton(text=text, callback_data=data)
 
@@ -45,6 +44,7 @@ def settings_menu(
             _btn(_mark("30 min", cleanup_minutes == 30), "set:clean:30"),
         ],
         [_btn(_mark("English", language == "en"), "set:lang:en")],
+        [_btn(_mark("Hinglish", language == "hi-en"), "set:lang:hi-en")],
     ]
     if is_admin:
         rows.append([_btn(f"{Emoji.ADMIN} Admin Panel", "adm:panel:home")])
@@ -81,16 +81,30 @@ def back_to_menu() -> InlineKeyboardMarkup:
 
 def scrape_panel(state: dict) -> InlineKeyboardMarkup:
     keywords = state.get("keywords") or []
-    keyword_label = ", ".join(keywords) if keywords else "any"
+    exclude = state.get("exclude") or []
+    sender = state.get("sender") or "any"
+    minlen = state.get("min_length") or 0
     limit = state.get("limit", 100)
     mode = state.get("mode", "messages")
     autoclean = state.get("autoclean", True)
     media = state.get("include_media", False)
     dates = state.get("dates", "none")
+    to_channel = state.get("to_channel", True)
+
+    kw_label = ", ".join(keywords) if keywords else "any"
+    ex_label = ", ".join(exclude) if exclude else "none"
 
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [_btn(f"{Emoji.FIND} Keywords: {keyword_label}"[:60], "scr:kw")],
+            [_btn(f"{Emoji.FIND} Keywords: {kw_label}"[:60], "scr:kw")],
+            [
+                _btn(f"🚫 Exclude: {ex_label}"[:34], "scr:exclude"),
+                _btn(f"👤 Sender: {sender}"[:24], "scr:sender"),
+            ],
+            [
+                _btn(f"📏 Min len: {minlen}"[:24], "scr:minlen"),
+                _btn(_mark("Media", media), "scr:media"),
+            ],
             [
                 _btn(_mark("100", limit == 100), "scr:limit:100"),
                 _btn(_mark("500", limit == 500), "scr:limit:500"),
@@ -99,18 +113,19 @@ def scrape_panel(state: dict) -> InlineKeyboardMarkup:
             ],
             [
                 _btn(f"✏️ Limit: {limit or 'All'}"[:30], "scr:limitcustom"),
-                _btn(_mark("Media", media), "scr:media"),
-            ],
-            [
                 _btn(_mark("Messages", mode == "messages"), "scr:mode:messages"),
                 _btn(_mark("Cards", mode == "cards"), "scr:mode:cards"),
-                _btn(_mark("Auto-clean", autoclean), "scr:autoclean"),
             ],
             [
+                _btn(_mark("Auto-clean", autoclean), "scr:autoclean"),
                 _btn(_mark("All time", dates == "none"), "scr:dates:none"),
                 _btn(_mark("7d", dates == "7"), "scr:dates:7"),
                 _btn(_mark("30d", dates == "30"), "scr:dates:30"),
-                _btn("Custom dates", "scr:dates:custom"),
+                _btn("Custom", "scr:dates:custom"),
+            ],
+            [
+                _btn(_mark(f"📡 {Emoji.INBOX} Channel", to_channel), "scr:chan"),
+                _btn(f"{Emoji.SETTINGS} Defaults", "scr:defaults"),
             ],
             [_btn(f"{Emoji.SCRAPE} Run scrape", "scr:run")],
             [_btn(f"{Emoji.CANCEL} Cancel", "scr:cancel")],
@@ -161,6 +176,15 @@ def scrape_sources(
         )
     rows.append([_btn(f"{Emoji.BACK} Back", "menu:home")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def defaults_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_btn("♻️ Reset defaults", "scr:defaults:reset")],
+            [_btn(f"{Emoji.BACK} Back", "scr:backpanel")],
+        ]
+    )
 
 
 def clean_prompt() -> InlineKeyboardMarkup:

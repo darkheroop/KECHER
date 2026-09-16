@@ -16,7 +16,11 @@ DEFAULTS = {
     "autoclean": True,
     "dates": "none",
     "keywords": [],
+    "exclude": [],
+    "sender": "",
+    "min_length": 0,
     "include_media": False,
+    "to_channel": True,
 }
 
 
