@@ -20,6 +20,7 @@ from bot.db.repositories import (
     get_authorized_source,
     get_user_settings,
     list_authorized_sources,
+    remove_authorized_source,
 )
 from bot.handlers.cards import _send_file
 from bot.handlers.common import ensure_user
@@ -61,6 +62,7 @@ DEFAULT_STATE = {
     "autoclean": True,
     "dates": "none",
     "keywords": [],
+    "include_media": False,
 }
 
 
@@ -90,6 +92,7 @@ def _panel_text(sc: dict, title: str) -> str:
     limit = sc.get("limit", 100)
     mode = "Cards" if sc.get("mode") == "cards" else "Messages"
     autoclean = "on" if sc.get("autoclean") else "off"
+    media = "on" if sc.get("include_media") else "off"
     dates = {"none": "all", "7": "7d", "30": "30d", "custom": "custom"}.get(
         sc.get("dates", "none"), "all"
     )
@@ -98,7 +101,8 @@ def _panel_text(sc: dict, title: str) -> str:
         f"Source · <b>{html.escape(title)}</b>\n"
         f"Keywords · <b>{html.escape(keywords)}</b>\n"
         f"Limit · <b>{limit or 'All'}</b>   Mode · <b>{mode}</b>\n"
-        f"Dates · <b>{dates}</b>   Auto-clean · <b>{autoclean}</b>"
+        f"Dates · <b>{dates}</b>   Media · <b>{media}</b>\n"
+        f"Auto-clean · <b>{autoclean}</b>"
     )
 
 
@@ -418,6 +422,87 @@ async def on_scrape_dates(message: Message, state: FSMContext) -> None:
     await message.answer(_panel_text(sc, sc.get("source_title", "")), reply_markup=scrape_panel(sc))
 
 
+@router.callback_query(F.data == "scr:sources")
+async def scr_sources_manage(callback: CallbackQuery, state: FSMContext) -> None:
+    async with session_scope() as session:
+        user = await ensure_user(session, callback.from_user)
+        sources = await list_authorized_sources(session, user.id)
+    await safe_edit(
+        callback.message,
+        f"{Emoji.SCRAPE} <b>Your sources</b>\n\nTap a source to remove it:",
+        reply_markup=scrape_sources(
+            [(s.id, s.title or s.tg_peer_ref) for s in sources], manage=True
+        ),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "scr:back")
+async def scr_sources_back(callback: CallbackQuery, state: FSMContext) -> None:
+    async with session_scope() as session:
+        user = await ensure_user(session, callback.from_user)
+        sources = await list_authorized_sources(session, user.id)
+    await safe_edit(
+        callback.message,
+        f"{Emoji.SCRAPE} Choose a source, or add one:",
+        reply_markup=scrape_sources(
+            [(s.id, s.title or s.tg_peer_ref) for s in sources]
+        ),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("scr:delsrc:"))
+async def scr_del_source(callback: CallbackQuery, state: FSMContext) -> None:
+    raw = (callback.data or "").rsplit(":", 1)[-1]
+    if raw.isdigit():
+        async with session_scope() as session:
+            user = await ensure_user(session, callback.from_user)
+            await remove_authorized_source(session, user.id, int(raw))
+            sources = await list_authorized_sources(session, user.id)
+    else:
+        sources = []
+    await safe_edit(
+        callback.message,
+        f"{Emoji.SCRAPE} <b>Your sources</b>\n\nRemove another, or add a new one:",
+        reply_markup=scrape_sources(
+            [(s.id, s.title or s.tg_peer_ref) for s in sources], manage=True
+        ),
+    )
+    await callback.answer("Removed")
+
+
+@router.callback_query(F.data == "scr:limitcustom")
+async def scr_limit_custom(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(Flow.awaiting_limit)
+    await safe_edit(
+        callback.message, "Send the maximum number of messages to scan (e.g. <b>2000</b>)."
+    )
+    await callback.answer()
+
+
+@router.message(Flow.awaiting_limit)
+async def on_limit_text(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if not text.isdigit():
+        await message.answer("Send a whole number.")
+        return
+    sc = await _load_sc(state)
+    sc["limit"] = int(text)
+    await _save_sc(state, sc)
+    await state.set_state(None)
+    await message.answer(_panel_text(sc, sc.get("source_title", "")), reply_markup=scrape_panel(sc))
+
+
+@router.callback_query(F.data == "scr:media")
+async def scr_media(callback: CallbackQuery, state: FSMContext) -> None:
+    sc = await _load_sc(state)
+    sc["include_media"] = not sc.get("include_media", False)
+    await _save_sc(state, sc)
+    await safe_edit(callback.message, _panel_text(sc, sc.get("source_title", "")), reply_markup=scrape_panel(sc))
+    await callback.answer()
+
+
 # --------------------------------------------------------------------------- #
 # Run
 # --------------------------------------------------------------------------- #
@@ -482,6 +567,7 @@ async def scr_run(
         date_from=date_from,
         date_to=date_to,
         text_only=True,
+        include_media=bool(sc.get("include_media")),
     )
     try:
         result = await scraper.scrape(

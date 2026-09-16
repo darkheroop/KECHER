@@ -17,3 +17,4 @@ class Flow(StatesGroup):
     awaiting_phone = State()
     awaiting_code = State()
     awaiting_password = State()
+    awaiting_limit = State()

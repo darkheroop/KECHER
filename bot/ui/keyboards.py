@@ -79,19 +79,13 @@ def back_to_menu() -> InlineKeyboardMarkup:
     )
 
 
-def scrape_sources(sources: list[tuple[int, str]]) -> InlineKeyboardMarkup:
-    rows = [[_btn(title, f"scr:src:{sid}")] for sid, title in sources]
-    rows.append([_btn("➕ Add source", "scr:add")])
-    rows.append([_btn(f"{Emoji.BACK} Back", "menu:home")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
 def scrape_panel(state: dict) -> InlineKeyboardMarkup:
     keywords = state.get("keywords") or []
     keyword_label = ", ".join(keywords) if keywords else "any"
     limit = state.get("limit", 100)
     mode = state.get("mode", "messages")
     autoclean = state.get("autoclean", True)
+    media = state.get("include_media", False)
     dates = state.get("dates", "none")
 
     return InlineKeyboardMarkup(
@@ -104,11 +98,16 @@ def scrape_panel(state: dict) -> InlineKeyboardMarkup:
                 _btn(_mark("All", not limit), "scr:limit:0"),
             ],
             [
-                _btn(_mark("Messages", mode == "messages"), "scr:mode:messages"),
-                _btn(_mark("Cards", mode == "cards"), "scr:mode:cards"),
+                _btn(f"✏️ Limit: {limit or 'All'}"[:30], "scr:limitcustom"),
+                _btn(_mark("Media", media), "scr:media"),
             ],
             [
+                _btn(_mark("Messages", mode == "messages"), "scr:mode:messages"),
+                _btn(_mark("Cards", mode == "cards"), "scr:mode:cards"),
                 _btn(_mark("Auto-clean", autoclean), "scr:autoclean"),
+            ],
+            [
+                _btn(_mark("All time", dates == "none"), "scr:dates:none"),
                 _btn(_mark("7d", dates == "7"), "scr:dates:7"),
                 _btn(_mark("30d", dates == "30"), "scr:dates:30"),
                 _btn("Custom dates", "scr:dates:custom"),
@@ -117,6 +116,31 @@ def scrape_panel(state: dict) -> InlineKeyboardMarkup:
             [_btn(f"{Emoji.CANCEL} Cancel", "scr:cancel")],
         ]
     )
+
+
+def scrape_sources(
+    sources: list[tuple[int, str]], *, manage: bool = False
+) -> InlineKeyboardMarkup:
+    rows = []
+    for sid, title in sources:
+        if manage:
+            rows.append(
+                [_btn(f"🗑 Remove · {title}"[:60], f"scr:delsrc:{sid}")]
+            )
+        else:
+            rows.append([_btn(title, f"scr:src:{sid}")])
+    rows.append([_btn("➕ Add source", "scr:add")])
+    if sources:
+        rows.append(
+            [
+                _btn(
+                    "🧰 Manage sources" if not manage else "✅ Done",
+                    "scr:sources" if not manage else "scr:back",
+                )
+            ]
+        )
+    rows.append([_btn(f"{Emoji.BACK} Back", "menu:home")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def account_help() -> InlineKeyboardMarkup:
