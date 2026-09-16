@@ -7,13 +7,20 @@ import json
 import logging
 
 from aiogram import F, Router
+from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+    WebAppInfo,
+)
 
 from bot.config import Settings
 from bot.handlers.menu import help_text, welcome_text
 from bot.services.file_manager import FileManager
 from bot.ui.keyboards import main_menu
+from bot.webapp import webapp_url
 
 logger = logging.getLogger(__name__)
 router = Router(name="webapp")
@@ -49,6 +56,24 @@ def _scrape_summary(payload: dict) -> str:
         f"Dry-run: <b>{'on' if payload.get('dryRun') else 'off'}</b>\n\n"
         "Run the real scrape from <code>/scrape</code> (pick your saved sources)."
     )
+
+
+@router.message(Command("app"))
+async def cmd_app(message: Message, settings: Settings) -> None:
+    url = webapp_url(settings)
+    if not url:
+        await message.answer(
+            "📱 The Mini App isn't configured yet.\n\n"
+            "Set <code>PUBLIC_BASE_URL</code> to this service's public HTTPS URL "
+            "and redeploy.",
+        )
+        return
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Open Card File Bot", web_app=WebAppInfo(url=url))]
+        ]
+    )
+    await message.answer("📱 Tap to open the app:", reply_markup=keyboard)
 
 
 @router.message(F.web_app_data)

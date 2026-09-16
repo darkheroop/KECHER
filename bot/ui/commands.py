@@ -39,6 +39,7 @@ PUBLIC_COMMANDS: list[BotCommand] = [
     BotCommand(command="history", description="Your recent scrapes"),
     BotCommand(command="findbin", description="Extract records for a numeric BIN"),
     BotCommand(command="settings", description="Button / text mode"),
+    BotCommand(command="app", description="Open the Mini App"),
     BotCommand(command="emojis", description="How to customise the emojis"),
     BotCommand(command="id", description="Your ID and access status"),
     BotCommand(command="mykey", description="Check your access"),

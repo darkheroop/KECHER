@@ -1314,6 +1314,7 @@ async def _health_text(settings: Settings, scraper) -> str:  # noqa: ANN001
         f"Channel 2: <code>{html.escape(settings.scrape_channel_id or '-')}</code>\n"
         f"Accounts: <b>{accounts}</b>\n"
         f"Mini App: <b>{'on' if settings.public_base_url else 'off'}</b>"
+        + (f" · <code>{html.escape(settings.public_base_url)}</code>" if settings.public_base_url else "")
     )
 
 

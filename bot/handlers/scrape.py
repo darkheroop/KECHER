@@ -376,7 +376,7 @@ async def scr_use_account(callback: CallbackQuery, scraper) -> None:  # noqa: AN
 @router.callback_query(F.data.startswith("scr:logout:"))
 async def scr_logout(callback: CallbackQuery, scraper) -> None:  # noqa: ANN001
     label = (callback.data or "").split(":", 2)[2]
-    scraper.logout(callback.from_user.id, label)
+    await scraper.logout(callback.from_user.id, label)
     accounts = scraper.accounts_for(callback.from_user.id)
     if accounts:
         await safe_edit(

@@ -9,6 +9,7 @@ the account's own dialog list and never bypassed.
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 from collections.abc import Callable
 from pathlib import Path
@@ -186,6 +187,52 @@ class TelethonScraper:
         }
         return label
 
+    # -- session blobs: survive redeploys with no volume -------------------- #
+    def _blob_key(self, label: str) -> str:
+        return f"session_blob:{label}"
+
+    async def _store_blob(self, label: str) -> None:
+        account = self._registry.get(label)
+        if account is None:
+            return
+        path = self._registry.session_path(account)
+        if not path.is_file():
+            return
+        try:
+            blob = base64.b64encode(path.read_bytes()).decode("ascii")
+            async with session_scope() as session:
+                await set_bot_setting(session, self._blob_key(label), blob)
+        except Exception:  # noqa: BLE001 - persistence is best-effort
+            logger.exception("Could not store session blob for %s", label)
+
+    async def _restore_blob(self, label: str) -> None:
+        account = self._registry.get(label)
+        if account is None:
+            return
+        path = self._registry.session_path(account)
+        if path.is_file():
+            return
+        try:
+            async with session_scope() as session:
+                blob = await get_bot_setting(session, self._blob_key(label))
+        except Exception:  # noqa: BLE001
+            return
+        if not blob:
+            return
+        try:
+            self._registry.session_dir.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(base64.b64decode(blob))
+            logger.info("Restored session for %s from database", label)
+        except Exception:  # noqa: BLE001
+            logger.exception("Could not restore session for %s", label)
+
+    async def _forget_blob(self, label: str) -> None:
+        try:
+            async with session_scope() as session:
+                await set_bot_setting(session, self._blob_key(label), "")
+        except Exception:  # noqa: BLE001
+            pass
+
     async def confirm_code(self, *, owner: int, code: str) -> str:
         state = self._pending.get(owner)
         if not state:
@@ -224,9 +271,11 @@ class TelethonScraper:
             label = state["label"]
             self._registry.upsert(label, owner=owner, session=label, enabled=True)
             await self.set_active(owner, label)
+            await self._store_blob(label)
 
-    def logout(self, owner: int, label: str) -> None:
+    async def logout(self, owner: int, label: str) -> None:
         self._registry.delete(label)
+        await self._forget_blob(label)
 
     def _session_path(self, label: str) -> Path:
         account = self._registry.get(label)
@@ -234,11 +283,12 @@ class TelethonScraper:
             raise ScraperUnavailable(f"Unknown account label: {label}")
         return self._registry.session_path(account)
 
-    def _make_client(self, label: str):  # noqa: ANN001
+    async def _make_client(self, label: str):  # noqa: ANN001
         if not self.available():
             raise ScraperUnavailable(
                 "Telethon/API credentials are not configured (see /plogin)."
             )
+        await self._restore_blob(label)
         from telethon import TelegramClient  # lazy, optional dependency
 
         return TelegramClient(
@@ -286,7 +336,7 @@ class TelethonScraper:
 
     async def verify_source(self, label: str, peer_ref: str) -> str | None:
         """Return the source title if the account can access it, else None."""
-        client = self._make_client(label)
+        client = await self._make_client(label)
         async with client:
             entity, title = await self._find_dialog_entity(client, peer_ref)
             return title if entity is not None else None
@@ -301,7 +351,7 @@ class TelethonScraper:
         fmt: str,
         on_progress: ProgressFn | None = None,
     ) -> ScrapeResult:
-        client = self._make_client(label)
+        client = await self._make_client(label)
         async with client:
             entity, _ = await self._find_dialog_entity(client, peer_ref)
             if entity is None:
@@ -314,6 +364,7 @@ class TelethonScraper:
             async for message in client.iter_messages(entity, limit=options.limit):
                 collected.append(to_datum(message))
 
+        await self._store_blob(label)
         return await asyncio.to_thread(
             scrape_to_file, collected, out, options=options, fmt=fmt, on_progress=on_progress
         )
