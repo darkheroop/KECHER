@@ -148,6 +148,15 @@ def scrape_sources(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def clean_prompt() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_btn("🧹 Clean & build .txt", "scr:doclean")],
+            [_btn("✅ Keep raw", "scr:keepraw")],
+        ]
+    )
+
+
 def combine_prompt(count: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[

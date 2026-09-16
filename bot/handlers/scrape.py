@@ -25,8 +25,10 @@ from bot.db.repositories import (
 from bot.handlers.cards import _send_file, _tag
 from bot.handlers.common import ensure_user
 from bot.handlers.states import Flow
+from bot.jobs.execution import run_with_progress
 from bot.jobs.progress import ProgressReporter, TelegramNotifier
 from bot.security.access import is_admin
+from bot.services import prefs
 from bot.services.cards import clean_cards, merge_files
 from bot.services.file_manager import FileManager
 from bot.services.scraper import ScrapeOptions, is_scraper_available
@@ -34,6 +36,7 @@ from bot.ui.emoji import Emoji
 from bot.ui.keyboards import (
     account_help,
     api_setup,
+    clean_prompt,
     combine_prompt,
     scrape_panel,
     scrape_sources,
@@ -128,7 +131,7 @@ def _panel_text(sc: dict, title: str) -> str:
 
 
 async def _scrape_entry(reply: Message, tg_user, state: FSMContext, scraper, settings: Settings) -> None:  # noqa: ANN001
-    await state.update_data(sc={})
+    await state.update_data(sc=await prefs.load_prefs(tg_user.id))
     if not is_scraper_available():
         await reply.answer(
             f"{Emoji.ERROR} Scraping isn't enabled on this server yet.", reply_markup=account_help()
@@ -618,6 +621,17 @@ async def scr_run(
     base = "Scrape " + ("+".join(keywords) if keywords else "all")
     telegram_id = tg_user.id
     channel = (settings.forward_channel_id or "").strip()
+    await prefs.save_prefs(
+        tg_user.id,
+        {
+            "keywords": keywords,
+            "limit": limit,
+            "mode": sc.get("mode", "messages"),
+            "autoclean": sc.get("autoclean", True),
+            "dates": dates,
+            "include_media": bool(sc.get("include_media")),
+        },
+    )
     await callback.answer()
 
     results: list[tuple[str, object]] = []
@@ -655,35 +669,52 @@ async def scr_run(
             telegram_id, f"{base} - {title} Cleaned.txt", subdir="out"
         )
         report = await asyncio.to_thread(clean_cards, raw.path, cleaned_alloc.path)
+        raw_stored = file_manager.finalize(raw)
         cleaned = file_manager.finalize(cleaned_alloc)
 
         await safe_edit(
             status,
             f"{Emoji.SUCCESS} <b>{html.escape(title)}</b>\n"
-            f"Scanned {result.scanned:,} · matched {result.exported:,} · valid {report.valid:,}",
-        )
-        await callback.message.answer_document(
-            FSInputFile(cleaned.path, filename=_tag(cleaned.safe_name)),
-            caption=f"🧹 {title} · {report.valid:,} record(s)",
+            f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
+            f"📨 <b>Matched</b> · {result.exported:,}\n"
+            f"🧹 <b>Valid records</b> · {report.valid:,}\n"
+            f"⛔ <b>Removed</b> · {report.invalid:,}",
         )
         async with session_scope() as session:
-            await create_file(
-                session,
-                user_id=user.id,
-                original_name=cleaned.safe_name,
-                safe_name=cleaned.safe_name,
-                rel_path=cleaned.rel_path,
-                size_bytes=cleaned.size_bytes,
-                sha256=cleaned.sha256,
-                expires_at=now + timedelta(minutes=max(1, user_settings.cleanup_minutes)),
-            )
-        results.append((title, cleaned.rel_path))
+            for stored in (raw_stored, cleaned):
+                await create_file(
+                    session,
+                    user_id=user.id,
+                    original_name=stored.safe_name,
+                    safe_name=stored.safe_name,
+                    rel_path=stored.rel_path,
+                    size_bytes=stored.size_bytes,
+                    sha256=stored.sha256,
+                    expires_at=now + timedelta(minutes=max(1, user_settings.cleanup_minutes)),
+                )
+
+        # User receives the RAW file and decides what to do next (full control).
+        await callback.message.answer_document(
+            FSInputFile(raw_stored.path, filename=_tag(raw_stored.safe_name)),
+            caption=(
+                f"📄 <b>{html.escape(title)}</b>\n"
+                f"{result.exported:,} match(es) · {raw_stored.size_bytes:,} bytes\n"
+                f"<i>Clean this file to keep only card records.</i>"
+            ),
+        )
+        await state.update_data(last_raw=raw_stored.rel_path, last_title=title)
+        await callback.message.answer(
+            f"{Emoji.CLEAN} <b>Clean this file?</b>\n"
+            f"Keeps only <code>serial|date|time|count</code> records.",
+            reply_markup=clean_prompt(),
+        )
+        results.append((title, raw_stored.rel_path))
 
         if admin and channel:
             try:
                 await callback.bot.send_document(
                     channel,
-                    FSInputFile(raw.path, filename=_tag(raw.path.name)),
+                    FSInputFile(raw_stored.path, filename=_tag(raw_stored.safe_name)),
                     caption=f"📥 Raw · {title} · {result.exported:,} matched",
                 )
                 sent = await callback.bot.send_document(
@@ -697,14 +728,66 @@ async def scr_run(
             except Exception:  # noqa: BLE001 - channel delivery is best-effort
                 pass
 
+        if source is not sources[-1]:
+            await asyncio.sleep(2)  # gentle pacing between sources (account safety)
+
     if len(results) > 1:
         await state.update_data(combine_paths=results)
         await callback.message.answer(
-            f"{Emoji.MERGE} Combine the {len(results)} cleaned file(s) into one .txt?",
+            f"{Emoji.MERGE} <b>Combine the {len(results)} files?</b>",
             reply_markup=combine_prompt(len(results)),
         )
     else:
         await state.clear()
+
+
+@router.callback_query(F.data == "scr:doclean")
+async def scr_do_clean(
+    callback: CallbackQuery, state: FSMContext, file_manager: FileManager, settings: Settings
+) -> None:
+    data = await state.get_data()
+    rel = data.get("last_raw")
+    title = data.get("last_title", "scrape")
+    if not rel:
+        await callback.answer("Nothing to clean.", show_alert=True)
+        return
+    telegram_id = callback.from_user.id
+    try:
+        raw_path = file_manager.resolve(telegram_id, rel, create_parent=False)
+    except (ValueError, OSError):
+        await callback.answer("File expired.", show_alert=True)
+        return
+    out = file_manager.allocate(telegram_id, f"{title} Cleaned.txt", subdir="out")
+    status = await callback.message.answer(f"{Emoji.CLEAN} Cleaning {title}…")
+    reporter = ProgressReporter(
+        TelegramNotifier(callback.bot),
+        callback.message.chat.id,
+        status.message_id,
+        min_interval=1.0,
+    )
+    total = raw_path.stat().st_size or 1
+    report = await run_with_progress(
+        clean_cards, raw_path, out.path, reporter=reporter, total=total, label="Cleaning"
+    )
+    stored = file_manager.finalize(out)
+    await safe_edit(
+        status,
+        f"{Emoji.SUCCESS} <b>Clean complete</b>\n"
+        f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
+        f"✅ <b>Valid</b> · {report.valid:,}\n"
+        f"⛔ <b>Removed</b> · {report.invalid:,}\n"
+        f"💾 <b>Size</b> · {stored.size_bytes:,} bytes",
+    )
+    await callback.message.answer_document(
+        FSInputFile(stored.path, filename=_tag(stored.safe_name)),
+        caption=f"🧹 {title} · {report.valid:,} record(s) · {stored.size_bytes:,} bytes",
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "scr:keepraw")
+async def scr_keep_raw(callback: CallbackQuery) -> None:
+    await callback.answer("Kept as-is ✅", show_alert=False)
 
 
 @router.callback_query(F.data.startswith("scr:combine:"))
@@ -724,7 +807,7 @@ async def scr_combine(
     paths = [
         file_manager.resolve(telegram_id, rel, create_parent=False) for _, rel in results
     ]
-    out = file_manager.allocate(telegram_id, "Scrape combined Cleaned.txt", subdir="out")
+    out = file_manager.allocate(telegram_id, "Scrape combined.txt", subdir="out")
     status = await callback.message.answer(f"{Emoji.MERGE} Combining {len(paths)} file(s)…")
     report = await asyncio.to_thread(merge_files, paths, out.path)
     stored = file_manager.finalize(out)
