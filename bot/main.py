@@ -30,6 +30,7 @@ from bot.security.middleware import (
 )
 from bot.security.ratelimit import SlidingWindowLimiter
 from bot.services.file_manager import FileManager
+from bot.services.credentials import load_into_settings
 from bot.services.forwarder import forward_pending_files
 from bot.services.retention import reap_expired_files
 from bot.services.scraper import AccountRegistry
@@ -121,6 +122,8 @@ async def run() -> None:
         settings.resolved_storage_root().mkdir(parents=True, exist_ok=True)
         await init_db(settings)
         logger.info("Database schema ensured (development mode)")
+
+    await load_into_settings(settings)
 
     bot = build_bot(settings)
     files = FileManager(settings)

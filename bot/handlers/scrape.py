@@ -25,11 +25,12 @@ from bot.db.repositories import (
 from bot.handlers.cards import _send_file
 from bot.handlers.common import ensure_user
 from bot.handlers.states import Flow
+from bot.security.access import is_admin
 from bot.services.cards import clean_cards
 from bot.services.file_manager import FileManager
 from bot.services.scraper import ScrapeOptions, is_scraper_available
 from bot.ui.emoji import Emoji
-from bot.ui.keyboards import account_help, scrape_panel, scrape_sources
+from bot.ui.keyboards import account_help, api_setup, scrape_panel, scrape_sources
 from bot.ui.render import safe_edit
 
 router = Router(name="scrape")
@@ -114,14 +115,23 @@ async def _scrape_entry(reply: Message, tg_user, state: FSMContext, scraper, set
         )
         return
     if not _api_ready(scraper, settings):
-        await reply.answer(
-            f"{Emoji.LOGIN} <b>Scraping needs API credentials</b>\n{DIVIDER}\n"
-            "<b>1.</b> <b>https://my.telegram.org</b> → API development tools\n"
-            "<b>2.</b> Set <code>TELEGRAM_API_ID</code> / <code>TELEGRAM_API_HASH</code> "
-            "in the server environment, then redeploy.\n"
-            "<b>3.</b> Come back and connect your account.",
-            reply_markup=None,
-        )
+        async with session_scope() as session:
+            user = await ensure_user(session, tg_user)
+            admin = is_admin(user, settings)
+        if admin:
+            await reply.answer(
+                f"{Emoji.LOCK} <b>Scraping setup</b>\n{DIVIDER}\n"
+                "No Telegram API credentials yet. Set them here (no server access "
+                "needed) — you only need <b>api_id</b> and <b>api_hash</b> from "
+                "<b>https://my.telegram.org</b>.",
+                reply_markup=api_setup(),
+            )
+        else:
+            await reply.answer(
+                f"{Emoji.LOCK} Scraping isn't available yet.\n\n"
+                "Ask an admin to enable it.",
+                reply_markup=account_help(),
+            )
         return
     if not scraper.user_connected(tg_user.id):
         await reply.answer(

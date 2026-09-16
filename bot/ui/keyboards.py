@@ -143,6 +143,16 @@ def scrape_sources(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def api_setup() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_btn(f"{Emoji.LOCK} Set API credentials", "adm:panel:api")],
+            [_btn("📖 How it works", "scr:helptext")],
+            [_btn(f"{Emoji.BACK} Back", "menu:home")],
+        ]
+    )
+
+
 def account_help() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -162,6 +172,7 @@ def admin_panel(forward_on: bool, access_on: bool) -> InlineKeyboardMarkup:
             ],
             [_btn("🧪 Forward test", "adm:panel:ftest")],
             [_btn("⏩ Forward pending now", "adm:panel:flush")],
+            [_btn("🔐 Telegram API credentials", "adm:panel:api")],
             [
                 _btn("🔑 Gen 5 × 1d", "adm:panel:gen:5:1"),
                 _btn("🔑 Gen 10 × 7d", "adm:panel:gen:10:7"),

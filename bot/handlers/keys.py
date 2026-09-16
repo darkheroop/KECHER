@@ -9,6 +9,7 @@ from pathlib import Path
 
 from aiogram import F, Router
 from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     CallbackQuery,
     FSInputFile,
@@ -43,6 +44,7 @@ from bot.db.repositories import (
     set_user_blocked,
 )
 from bot.handlers.common import ensure_user, notify_admins
+from bot.handlers.states import Flow
 from bot.security.access import (
     access_state,
     ensure_aware,
@@ -50,6 +52,7 @@ from bot.security.access import (
     has_active_access,
     is_admin,
 )
+from bot.services import credentials as creds
 from bot.services.keys import (
     format_duration,
     normalize_code,
@@ -222,18 +225,66 @@ async def _panel_view(settings: Settings) -> tuple[str, InlineKeyboardMarkup]:
         keys = await count_rows(session, AccessKey)
 
     channel = (settings.forward_channel_id or "").strip() or "not set"
+    api = "set ✅" if creds.is_configured(settings) else "not set ❌"
     text = (
         f"{Emoji.ADMIN} <b>Admin panel</b>\n"
         "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
         f"📡 Forwarding: <b>{'ON' if forward_on else 'OFF'}</b>\n"
         f"   Channel: <code>{html.escape(channel)}</code>\n"
-        f"🔐 Access required: <b>{'ON' if access_on else 'OFF'}</b>\n\n"
+        f"🔐 Access required: <b>{'ON' if access_on else 'OFF'}</b>\n"
+        f"🔑 Telegram API: <b>{api}</b>\n\n"
         f"👥 Users: <b>{users:,}</b>\n"
         f"👑 Admins: <b>{admins:,}</b>\n"
         f"✅ Active: <b>{active:,}</b>\n"
         f"🔑 Keys: <b>{keys:,}</b>"
     )
     return text, admin_panel(forward_on, access_on)
+
+
+@router.callback_query(F.data == "adm:panel:api")
+async def panel_api(callback: CallbackQuery, state: FSMContext, settings: Settings) -> None:
+    if not await _require_admin_cb(callback, settings):
+        return
+    await state.set_state(Flow.awaiting_api_id)
+    await safe_edit(
+        callback.message,
+        f"{Emoji.LOCK} <b>Telegram API — step 1/2</b>\n"
+        "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
+        "Send your <b>api_id</b> (a number).\n\n"
+        "Get it at <b>https://my.telegram.org → API development tools</b>.",
+    )
+    await callback.answer()
+
+
+@router.message(Flow.awaiting_api_id)
+async def on_api_id(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if not text.isdigit():
+        await message.answer("Send the numeric <b>api_id</b> (e.g. <code>1234567</code>).")
+        return
+    await state.update_data(api_id=text)
+    await state.set_state(Flow.awaiting_api_hash)
+    await message.answer(
+        f"{Emoji.LOCK} <b>Telegram API — step 2/2</b>\n\n"
+        "Send your <b>api_hash</b> (32 letters/numbers)."
+    )
+
+
+@router.message(Flow.awaiting_api_hash)
+async def on_api_hash(message: Message, state: FSMContext, settings: Settings) -> None:
+    api_hash = (message.text or "").strip()
+    data = await state.get_data()
+    api_id = data.get("api_id")
+    await state.clear()
+    if not api_id or len(api_hash) < 8:
+        await message.answer(f"{Emoji.ERROR} Invalid api_hash. Start again with /admin → 🔐.")
+        return
+    await creds.save(settings, str(api_id), api_hash)
+    text, keyboard = await _panel_view(settings)
+    await message.answer(
+        f"{Emoji.SUCCESS} Credentials saved. Now open /scrape to connect an account.",
+        reply_markup=keyboard,
+    )
 
 
 async def _require_admin_cb(callback: CallbackQuery, settings: Settings) -> bool:

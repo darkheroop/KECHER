@@ -18,3 +18,5 @@ class Flow(StatesGroup):
     awaiting_code = State()
     awaiting_password = State()
     awaiting_limit = State()
+    awaiting_api_id = State()
+    awaiting_api_hash = State()
