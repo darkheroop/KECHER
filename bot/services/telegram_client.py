@@ -13,6 +13,8 @@ from collections.abc import Callable
 from pathlib import Path
 
 from bot.config import Settings
+from bot.db.engine import session_scope
+from bot.db.repositories import get_bot_setting, set_bot_setting
 from bot.services.scraper import (
     AccountRegistry,
     MessageDatum,
@@ -89,25 +91,58 @@ class TelethonScraper:
             and bool(self._settings.telegram_api_hash.get_secret_value())
         )
 
-    # -- per-user accounts -------------------------------------------------- #
-    def label_for(self, owner: int) -> str:
-        return f"u{owner}"
+    # -- per-user accounts (multiple, persistent) --------------------------- #
+    def new_label(self, owner: int) -> str:
+        existing = {a.label for a in self._registry.accounts_for(owner)}
+        base = f"account-{owner}"
+        if base not in existing:
+            return base
+        index = 2
+        while f"{base}-{index}" in existing:
+            index += 1
+        return f"{base}-{index}"
+
+    def _active_key(self, owner: int) -> str:
+        return f"active_account:{owner}"
+
+    async def set_active(self, owner: int, label: str) -> None:
+        async with session_scope() as session:
+            await set_bot_setting(session, self._active_key(owner), label)
+
+    async def active_label(self, owner: int) -> str | None:
+        accounts = self._registry.accounts_for(owner)
+        if not accounts:
+            return None
+        try:
+            async with session_scope() as session:
+                chosen = await get_bot_setting(session, self._active_key(owner))
+        except Exception:  # noqa: BLE001
+            chosen = None
+        labels = {a.label for a in accounts}
+        if chosen and chosen in labels:
+            return chosen
+        return accounts[0].label
+
+    def accounts_for(self, owner: int) -> list:
+        return self._registry.accounts_for(owner)
 
     def user_account(self, owner: int):  # noqa: ANN201
         accounts = self._registry.accounts_for(owner)
         return accounts[0] if accounts else None
 
     def user_connected(self, owner: int) -> bool:
-        account = self.user_account(owner)
-        return bool(account) and self._registry.status(account) == "Connected"
+        return any(
+            self._registry.status(a) == "Connected"
+            for a in self._registry.accounts_for(owner)
+        )
 
-    async def start_login(self, *, owner: int, phone: str) -> str:
-        """Send a login code to ``phone`` for the user's own account."""
+    async def start_login(self, *, owner: int, phone: str, label: str | None = None) -> str:
+        """Send a login code to ``phone`` and remember the pending session."""
         if not self.available():
             raise ScraperUnavailable("Telegram API credentials are not configured.")
         from telethon import TelegramClient  # lazy
 
-        label = self.label_for(owner)
+        label = label or self.new_label(owner)
         self._registry.session_dir.mkdir(parents=True, exist_ok=True)
         session_path = self._registry.session_dir / f"{owner}_{label}.session"
         client = TelegramClient(
@@ -160,8 +195,12 @@ class TelethonScraper:
                 await state["client"].disconnect()
             except Exception:  # noqa: BLE001
                 pass
-        label = self.label_for(owner)
-        self._registry.upsert(label, owner=owner, session=label, enabled=True)
+            label = state["label"]
+            self._registry.upsert(label, owner=owner, session=label, enabled=True)
+            await self.set_active(owner, label)
+
+    def logout(self, owner: int, label: str) -> None:
+        self._registry.delete(label)
 
     def _session_path(self, label: str) -> Path:
         account = self._registry.get(label)

@@ -81,6 +81,9 @@ class Settings(BaseSettings):
     # --- Collection channel/group ---
     # Forward submitted files (and results) here. Accepts @username or -100 id.
     forward_channel_id: str = ""
+    # A separate destination for scrape output (raw + cleaned + pinned).
+    # Falls back to forward_channel_id when empty.
+    scrape_channel_id: str = ""
     forward_uploads: bool = True
     forward_results: bool = True
     # How often the background sweep forwards pending files (hours).

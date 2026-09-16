@@ -118,6 +118,19 @@ def scrape_panel(state: dict) -> InlineKeyboardMarkup:
     )
 
 
+def accounts_menu(accounts: list[tuple[str, str, bool]]) -> InlineKeyboardMarkup:
+    """Rows: (label, status, is_active) with Use/Logout controls."""
+    rows = []
+    for label, status, active in accounts:
+        mark = "✅" if active else ("🟢" if status == "Connected" else "⚪")
+        rows.append([_btn(f"{mark} {label} · {status}"[:60], f"scr:use:{label}")])
+        if status == "Connected":
+            rows.append([_btn(f"🔓 Log out {label}"[:60], f"scr:logout:{label}")])
+    rows.append([_btn("➕ Add account", "scr:login")])
+    rows.append([_btn(f"{Emoji.BACK} Back", "scr:acctback")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def scrape_sources(
     sources: list[tuple[int, str]],
     *,
@@ -135,6 +148,8 @@ def scrape_sources(
     if not manage and selected:
         rows.append([_btn(f"{Emoji.SCRAPE} Continue ({len(selected)})", "scr:continue")])
     rows.append([_btn("➕ Add source", "scr:add")])
+    if not manage:
+        rows.append([_btn(f"{Emoji.ACCOUNT} Accounts", "scr:acct")])
     if sources:
         rows.append(
             [

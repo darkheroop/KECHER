@@ -257,6 +257,21 @@ class AccountRegistry:
         self._save(accounts)
         return target
 
+    def delete(self, label: str) -> None:
+        """Remove an account entry (and its session file, if present)."""
+        accounts = self.load()
+        keep = []
+        for account in accounts:
+            if account.label == label:
+                session = self.session_path(account)
+                try:
+                    session.unlink(missing_ok=True)
+                except OSError:  # pragma: no cover
+                    pass
+                continue
+            keep.append(account)
+        self._save(keep)
+
     def _save(self, accounts: list[AccountInfo]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {

@@ -35,6 +35,7 @@ from bot.services.scraper import ScrapeOptions, is_scraper_available
 from bot.ui.emoji import Emoji
 from bot.ui.keyboards import (
     account_help,
+    accounts_menu,
     api_setup,
     clean_prompt,
     combine_prompt,
@@ -196,19 +197,20 @@ async def cmd_plogin(message: Message) -> None:
 @router.message(Command("myaccounts"))
 async def cmd_myaccounts(message: Message, scraper) -> None:  # noqa: ANN001
     assert message.from_user is not None
-    account = scraper.user_account(message.from_user.id) if scraper else None
-    if account is None:
+    accounts = scraper.accounts_for(message.from_user.id) if scraper else []
+    if not accounts:
         await message.answer(
             f"{Emoji.ACCOUNT} No account connected.\n\nConnect one to start scraping.",
             reply_markup=account_help(),
         )
         return
-    status = scraper.registry.status(account)
-    await message.answer(
-        f"{Emoji.ACCOUNT} <b>Your account</b>\n{DIVIDER}\n"
-        f"<b>{account.label}</b> · {status}",
-        reply_markup=account_help() if status != "Connected" else None,
-    )
+    active = await scraper.active_label(message.from_user.id)
+    lines = [f"{Emoji.ACCOUNT} <b>Your accounts</b>", DIVIDER]
+    for account in accounts:
+        status = scraper.registry.status(account)
+        mark = "✅" if account.label == active else "•"
+        lines.append(f"{mark} <b>{account.label}</b> · {status}")
+    await message.answer("\n".join(lines))
 
 
 @router.callback_query(F.data == "scr:helptext")
@@ -307,6 +309,87 @@ async def on_password(message: Message, state: FSMContext, scraper) -> None:  # 
 
 
 # --------------------------------------------------------------------------- #
+# Accounts
+# --------------------------------------------------------------------------- #
+async def _accounts_menu(scraper, owner: int) -> object:  # noqa: ANN001
+    accounts = scraper.accounts_for(owner)
+    active = await scraper.active_label(owner)
+    pairs = [
+        (a.label, scraper.registry.status(a), a.label == active) for a in accounts
+    ]
+    return accounts_menu(pairs)
+
+
+@router.callback_query(F.data == "scr:acct")
+async def scr_accounts(callback: CallbackQuery, scraper) -> None:  # noqa: ANN001
+    accounts = scraper.accounts_for(callback.from_user.id)
+    if not accounts:
+        await safe_edit(
+            callback.message,
+            f"{Emoji.ACCOUNT} No accounts yet. Add one — it stays logged in.",
+            reply_markup=account_help(),
+        )
+        await callback.answer()
+        return
+    await safe_edit(
+        callback.message,
+        f"{Emoji.ACCOUNT} <b>Your accounts</b>\n{DIVIDER}\n"
+        "Tap an account to make it active · 🔓 logs out.",
+        reply_markup=await _accounts_menu(scraper, callback.from_user.id),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "scr:acctback")
+async def scr_acct_back(callback: CallbackQuery, state: FSMContext, scraper) -> None:  # noqa: ANN001
+    if scraper.user_connected(callback.from_user.id):
+        await safe_edit(
+            callback.message,
+            "Tap one or more sources, then Continue:",
+            reply_markup=await _sources_kb(callback.from_user, state),
+        )
+    else:
+        await safe_edit(
+            callback.message,
+            f"{Emoji.LOGIN} Connect an account to start:",
+            reply_markup=account_help(),
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("scr:use:"))
+async def scr_use_account(callback: CallbackQuery, scraper) -> None:  # noqa: ANN001
+    label = (callback.data or "").split(":", 2)[2]
+    await scraper.set_active(callback.from_user.id, label)
+    await safe_edit(
+        callback.message,
+        f"{Emoji.ACCOUNT} <b>Your accounts</b>\n{DIVIDER}\nActive: <b>{html.escape(label)}</b>",
+        reply_markup=await _accounts_menu(scraper, callback.from_user.id),
+    )
+    await callback.answer("Active account set")
+
+
+@router.callback_query(F.data.startswith("scr:logout:"))
+async def scr_logout(callback: CallbackQuery, scraper) -> None:  # noqa: ANN001
+    label = (callback.data or "").split(":", 2)[2]
+    scraper.logout(callback.from_user.id, label)
+    accounts = scraper.accounts_for(callback.from_user.id)
+    if accounts:
+        await safe_edit(
+            callback.message,
+            f"{Emoji.SUCCESS} Logged out <b>{html.escape(label)}</b>.",
+            reply_markup=await _accounts_menu(scraper, callback.from_user.id),
+        )
+    else:
+        await safe_edit(
+            callback.message,
+            f"{Emoji.SUCCESS} All accounts removed. Add one to scrape:",
+            reply_markup=account_help(),
+        )
+    await callback.answer("Logged out")
+
+
+# --------------------------------------------------------------------------- #
 # Sources
 # --------------------------------------------------------------------------- #
 @router.callback_query(F.data == "scr:add")
@@ -331,7 +414,7 @@ async def on_source_text(message: Message, state: FSMContext, scraper) -> None: 
     if not scraper.user_connected(tg_user.id):
         await message.answer(f"{Emoji.ERROR} Connect your account first (/scrape).")
         return
-    label = scraper.label_for(tg_user.id)
+    label = await scraper.active_label(tg_user.id)
     status = await message.answer(f"{Emoji.SCRAPE} Verifying access to {html.escape(peer)}…")
     try:
         title = await scraper.verify_source(label, peer)
@@ -585,7 +668,7 @@ async def scr_run(
         await callback.answer("Connect your account first.", show_alert=True)
         return
 
-    label = scraper.label_for(tg_user.id)
+    label = await scraper.active_label(tg_user.id)
     now = datetime.now(UTC)
     async with session_scope() as session:
         user = await ensure_user(session, tg_user)
@@ -620,7 +703,7 @@ async def scr_run(
     )
     base = "Scrape " + ("+".join(keywords) if keywords else "all")
     telegram_id = tg_user.id
-    channel = (settings.forward_channel_id or "").strip()
+    channel = (settings.scrape_channel_id or settings.forward_channel_id or "").strip()
     await prefs.save_prefs(
         tg_user.id,
         {
@@ -819,7 +902,7 @@ async def scr_combine(
         FSInputFile(stored.path, filename=_tag(stored.safe_name)),
         caption=f"🔗 Combined · {report.lines:,} line(s)",
     )
-    channel = (settings.forward_channel_id or "").strip()
+    channel = (settings.scrape_channel_id or settings.forward_channel_id or "").strip()
     if channel:
         try:
             sent = await callback.bot.send_document(
