@@ -9,6 +9,7 @@ SUPPORTED = {"en": "English", "hi-en": "Hinglish"}
 
 STRINGS: dict[str, dict[str, str]] = {
     "en": {
+        "tagline": "Extract, validate & organise card serial files.",
         "welcome": (
             "Send a **.txt** — or reply to one with a command.\n\n"
             "/help   /settings"
@@ -41,6 +42,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "prompt_pick_sources": "Tap one or more sources, then Continue:",
     },
     "hi-en": {
+        "tagline": "Card serial files ko extract, validate aur organise karo.",
         "welcome": (
             "Ek **.txt** bhejo — ya kisi msg pe reply karke command do.\n\n"
             "/help   /settings"

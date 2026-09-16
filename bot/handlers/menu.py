@@ -78,6 +78,7 @@ COMING_SOON = {
 def welcome_text(lang: str = "en") -> str:
     return (
         f"{HEADER}\n{DIVIDER}\n"
+        f"<i>{markdown_to_html(tr(lang, 'tagline'))}</i>\n\n"
         f"{markdown_to_html(tr(lang, 'welcome'))}"
     )
 

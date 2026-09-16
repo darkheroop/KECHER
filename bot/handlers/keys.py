@@ -225,12 +225,14 @@ async def _panel_view(settings: Settings) -> tuple[str, InlineKeyboardMarkup]:
         keys = await count_rows(session, AccessKey)
 
     channel = (settings.forward_channel_id or "").strip() or "not set"
+    scrape_channel = (settings.scrape_channel_id or "").strip() or "(falls back)"
     api = "set ✅" if creds.is_configured(settings) else "not set ❌"
     text = (
         f"{Emoji.ADMIN} <b>Admin panel</b>\n"
         "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
         f"📡 Forwarding: <b>{'ON' if forward_on else 'OFF'}</b>\n"
-        f"   Channel: <code>{html.escape(channel)}</code>\n"
+        f"   Channel 1: <code>{html.escape(channel)}</code>\n"
+        f"📨 Channel 2 (scrape): <code>{html.escape(scrape_channel)}</code>\n"
         f"🔐 Access required: <b>{'ON' if access_on else 'OFF'}</b>\n"
         f"🔑 Telegram API: <b>{api}</b>\n\n"
         f"👥 Users: <b>{users:,}</b>\n"
@@ -239,6 +241,48 @@ async def _panel_view(settings: Settings) -> tuple[str, InlineKeyboardMarkup]:
         f"🔑 Keys: <b>{keys:,}</b>"
     )
     return text, admin_panel(forward_on, access_on)
+
+
+@router.callback_query(F.data == "adm:panel:fchan")
+async def panel_forward_channel(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(Flow.awaiting_forward_channel)
+    await safe_edit(
+        callback.message,
+        f"{Emoji.INBOX} <b>Channel 1 — uploads/forwards</b>\n"
+        "Send the channel id (<code>-100…</code>) or <code>@username</code>.\n"
+        "Send <code>-</code> to clear.",
+    )
+    await callback.answer()
+
+
+@router.message(Flow.awaiting_forward_channel)
+async def on_forward_channel(message: Message, state: FSMContext, settings: Settings) -> None:
+    value = (message.text or "").strip()
+    await state.set_state(None)
+    await creds.save_channel(settings, "forward", "" if value == "-" else value)
+    text, keyboard = await _panel_view(settings)
+    await message.answer(f"{Emoji.SUCCESS} Channel 1 saved.", reply_markup=keyboard)
+
+
+@router.callback_query(F.data == "adm:panel:schan")
+async def panel_scrape_channel(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(Flow.awaiting_scrape_channel)
+    await safe_edit(
+        callback.message,
+        f"{Emoji.SCRAPE} <b>Channel 2 — scrape output</b>\n"
+        "Send the channel id (<code>-100…</code>) or <code>@username</code>.\n"
+        "Send <code>-</code> to clear (then channel 1 is used).",
+    )
+    await callback.answer()
+
+
+@router.message(Flow.awaiting_scrape_channel)
+async def on_scrape_channel(message: Message, state: FSMContext, settings: Settings) -> None:
+    value = (message.text or "").strip()
+    await state.set_state(None)
+    await creds.save_channel(settings, "scrape", "" if value == "-" else value)
+    text, keyboard = await _panel_view(settings)
+    await message.answer(f"{Emoji.SUCCESS} Channel 2 saved.", reply_markup=keyboard)
 
 
 @router.callback_query(F.data == "adm:panel:api")

@@ -8,6 +8,7 @@ the account's own dialog list and never bypassed.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 from pathlib import Path
@@ -221,19 +222,49 @@ class TelethonScraper:
             self._settings.telegram_api_hash.get_secret_value(),
         )
 
+    async def _find_dialog_entity(self, client, peer_ref: str):  # noqa: ANN001, ANN201
+        """Resolve a peer to a dialog entity the account can actually see.
+
+        Works for public @usernames, numeric ids (including ``-100…``) and
+        titles — this is what makes private groups/channels work reliably
+        (their entities are not always resolvable via ``get_entity``).
+        """
+        ref = (peer_ref or "").strip()
+        if not ref or "t.me/+" in ref or ref.startswith("+") or "/joinchat/" in ref:
+            return None, None
+
+        digits = ref.lstrip("-")
+        want_id: int | None = int(digits) if digits.isdigit() else None
+        if want_id is not None and str(abs(want_id)).startswith("100") and len(str(abs(want_id))) > 10:
+            want_id = int(str(abs(want_id))[3:])  # -100XXXXXXXXXX -> XXXXX
+
+        needle = ref.lower().lstrip("@")
+
+        async for dialog in client.iter_dialogs():
+            entity = dialog.entity
+            if entity is None:
+                continue
+            title = (
+                getattr(entity, "title", None)
+                or getattr(entity, "username", None)
+                or getattr(entity, "first_name", None)
+                or ""
+            )
+            if want_id is not None and getattr(entity, "id", None) == want_id:
+                return entity, title
+            username = (getattr(entity, "username", None) or "").lower()
+            if username and username == needle:
+                return entity, title
+            if (title or "").lower() == needle:
+                return entity, title
+        return None, None
+
     async def verify_source(self, label: str, peer_ref: str) -> str | None:
         """Return the source title if the account can access it, else None."""
         client = self._make_client(label)
         async with client:
-            entity = await client.get_entity(peer_ref)
-            async for dialog in client.iter_dialogs():
-                if dialog.entity is not None and dialog.entity.id == entity.id:
-                    return (
-                        getattr(entity, "title", None)
-                        or getattr(entity, "username", None)
-                        or peer_ref
-                    )
-        return None
+            entity, title = await self._find_dialog_entity(client, peer_ref)
+            return title if entity is not None else None
 
     async def scrape(
         self,
@@ -247,22 +278,17 @@ class TelethonScraper:
     ) -> ScrapeResult:
         client = self._make_client(label)
         async with client:
-            entity = await client.get_entity(peer_ref)
-
-            allowed = False
-            async for dialog in client.iter_dialogs():
-                if dialog.entity is not None and dialog.entity.id == entity.id:
-                    allowed = True
-                    break
-            if not allowed:
+            entity, _ = await self._find_dialog_entity(client, peer_ref)
+            if entity is None:
                 raise SourceAccessDenied(
-                    "The authenticated account is not a member of this source."
+                    "The authenticated account can't access this source. It must be "
+                    "your own, or one you're a member of (invite links aren't supported)."
                 )
 
             collected: list[MessageDatum] = []
             async for message in client.iter_messages(entity, limit=options.limit):
                 collected.append(to_datum(message))
 
-        return scrape_to_file(
-            collected, out, options=options, fmt=fmt, on_progress=on_progress
+        return await asyncio.to_thread(
+            scrape_to_file, collected, out, options=options, fmt=fmt, on_progress=on_progress
         )

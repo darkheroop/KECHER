@@ -23,3 +23,5 @@ class Flow(StatesGroup):
     awaiting_exclude = State()
     awaiting_sender = State()
     awaiting_minlen = State()
+    awaiting_forward_channel = State()
+    awaiting_scrape_channel = State()

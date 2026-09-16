@@ -234,6 +234,10 @@ def admin_panel(forward_on: bool, access_on: bool) -> InlineKeyboardMarkup:
             ],
             [_btn("🧪 Forward test", "adm:panel:ftest")],
             [_btn("⏩ Forward pending now", "adm:panel:flush")],
+            [
+                _btn("📡 Forward channel", "adm:panel:fchan"),
+                _btn("📨 Scrape channel", "adm:panel:schan"),
+            ],
             [_btn("🔐 Telegram API credentials", "adm:panel:api")],
             [
                 _btn("🔑 Gen 5 × 1d", "adm:panel:gen:5:1"),
