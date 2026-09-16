@@ -57,6 +57,8 @@ ADMIN_COMMANDS: list[BotCommand] = PUBLIC_COMMANDS + [
     BotCommand(command="rmadmin", description="Demote a user"),
     BotCommand(command="block", description="Block a user"),
     BotCommand(command="unblock", description="Unblock a user"),
+    BotCommand(command="broadcast", description="Broadcast to all users"),
+    BotCommand(command="health", description="Bot health status"),
     BotCommand(command="emojiid", description="Get custom emoji IDs"),
     BotCommand(command="forward", description="Toggle forwarding to the channel"),
     BotCommand(command="stats", description="Bot statistics"),

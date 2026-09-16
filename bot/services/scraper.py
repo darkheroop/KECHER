@@ -68,11 +68,19 @@ class ScrapeResult:
     path: Path | None = None
 
 
+def _normalize(text: str) -> str:
+    import unicodedata
+
+    cleaned = unicodedata.normalize("NFKC", text or "")
+    cleaned = cleaned.replace("\u200b", "").replace("\ufeff", "")
+    return cleaned
+
+
 def keywords_match(text: str, words: list[str], mode: str = "contains") -> bool:
     """Return True if any keyword matches ``text`` (case-insensitive)."""
     if not words:
         return True
-    haystack = text or ""
+    haystack = _normalize(text)
     if mode == "regex":
         for word in words:
             try:
@@ -81,14 +89,17 @@ def keywords_match(text: str, words: list[str], mode: str = "contains") -> bool:
             except re.error:
                 continue
         return False
+    if mode == "exact":
+        stripped = " ".join(haystack.split()).casefold()
+        return any(" ".join(_normalize(w).split()).casefold() == stripped for w in words)
     if mode == "word":
         lowered = haystack.casefold()
         return any(
-            re.search(rf"(?<!\w){re.escape(word.casefold())}(?!\w)", lowered)
+            re.search(rf"(?<!\w){re.escape(_normalize(word).casefold())}(?!\w)", lowered)
             for word in words
         )
     lowered = haystack.casefold()
-    return any(word.casefold() in lowered for word in words)
+    return any(_normalize(word).casefold() in lowered for word in words)
 
 
 def message_matches(datum: MessageDatum, options: ScrapeOptions) -> bool:

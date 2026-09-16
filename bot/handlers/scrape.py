@@ -562,6 +562,17 @@ async def scr_dates(callback: CallbackQuery, state: FSMContext) -> None:
         sc["dates"] = "none"
         sc["date_from"] = None
         sc["date_to"] = None
+    elif value == "month":
+        sc["dates"] = "month"
+        sc["date_from"] = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
+        sc["date_to"] = None
+    elif value == "prevmonth":
+        first = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        prev_end = first - timedelta(seconds=1)
+        prev_start = prev_end.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        sc["dates"] = "custom"
+        sc["date_from"] = prev_start.isoformat()
+        sc["date_to"] = prev_end.isoformat()
     else:
         sc["dates"] = value
     await _save_sc(state, sc)
@@ -702,6 +713,28 @@ async def scr_kmode(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer(f"Keyword mode: {mode}")
 
 
+@router.callback_query(F.data == "scr:dry")
+async def scr_dry(callback: CallbackQuery, state: FSMContext) -> None:
+    sc = await _load_sc(state)
+    sc["dry_run"] = not sc.get("dry_run", False)
+    await _save_sc(state, sc)
+    await safe_edit(callback.message, _panel_text(sc, sc.get("source_title", "")), reply_markup=scrape_panel(sc))
+    await callback.answer("Dry-run " + ("on" if sc["dry_run"] else "off"))
+
+
+@router.callback_query(F.data.startswith("scr:fmt:"))
+async def scr_format(callback: CallbackQuery, state: FSMContext) -> None:
+    value = (callback.data or "").rsplit(":", 1)[-1]
+    if value not in {"txt", "csv", "json"}:
+        await callback.answer("Invalid", show_alert=True)
+        return
+    sc = await _load_sc(state)
+    sc["format"] = value
+    await _save_sc(state, sc)
+    await safe_edit(callback.message, _panel_text(sc, sc.get("source_title", "")), reply_markup=scrape_panel(sc))
+    await callback.answer(f"Format: {value.upper()}")
+
+
 @router.callback_query(F.data == "scr:minlen")
 async def scr_minlen(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(Flow.awaiting_minlen)
@@ -819,6 +852,8 @@ async def scr_run(
     keywords = sc.get("keywords") or []
     limit = int(sc.get("limit") or 0)
     dates = sc.get("dates", "none")
+    fmt = sc.get("format", "txt")
+    dry_run = bool(sc.get("dry_run", False))
     date_from = _parse_dt(sc.get("date_from"))
     date_to = _parse_dt(sc.get("date_to"))
     if dates == "7":
@@ -837,7 +872,7 @@ async def scr_run(
         keyword_mode=sc.get("keyword_mode", "contains"),
         date_from=date_from,
         date_to=date_to,
-        text_only=True,
+        text_only=(fmt == "txt"),
         include_media=bool(sc.get("include_media")),
     )
     base = "Scrape " + ("+".join(keywords) if keywords else "all")
@@ -890,7 +925,7 @@ async def scr_run(
                 peer_ref=source.tg_peer_ref,
                 out=raw.path,
                 options=options,
-                fmt="txt",
+                fmt=fmt,
             )
         except Exception as exc:  # noqa: BLE001
             stop.set()
@@ -899,6 +934,17 @@ async def scr_run(
             continue
         stop.set()
         await animation
+
+        if dry_run:
+            await safe_edit(
+                status,
+                f"{Emoji.INFO} <b>Dry-run</b> · {html.escape(title)}\n"
+                f"Scanned {result.scanned:,} · matched {result.exported:,}\n"
+                f"<i>Nothing was saved.</i>",
+            )
+            with contextlib.suppress(Exception):
+                raw.path.unlink()
+            continue
 
         cleaned_alloc = file_manager.allocate(
             telegram_id, f"Cleaned-{index}.txt", subdir="out"

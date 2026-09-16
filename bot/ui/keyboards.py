@@ -132,8 +132,18 @@ def scrape_panel(state: dict) -> InlineKeyboardMarkup:
                 _btn(_mark("90d", dates == "90"), "scr:dates:90"),
             ],
             [
+                _btn("📅 This month", "scr:dates:month"),
+                _btn("📅 Last month", "scr:dates:prevmonth"),
+            ],
+            [
                 _btn("🗓 Custom range", "scr:dates:custom"),
                 _btn("🧹 Clear dates", "scr:dates:clear"),
+            ],
+            [
+                _btn(_mark("Dry-run", state.get("dry_run", False)), "scr:dry"),
+                _btn(_mark("TXT", state.get("format", "txt") == "txt"), "scr:fmt:txt"),
+                _btn(_mark("CSV", state.get("format") == "csv"), "scr:fmt:csv"),
+                _btn(_mark("JSON", state.get("format") == "json"), "scr:fmt:json"),
             ],
             [
                 _btn(f"🚫 Exclude: {ex_label}"[:34], "scr:exclude"),
@@ -206,9 +216,14 @@ def all_accounts_menu(accounts: list[tuple[str, str, str]]) -> InlineKeyboardMar
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def broadcast_confirm() -> InlineKeyboardMarkup:
+def broadcast_confirm(target: str = "users") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [
+                _btn(_mark("Users", target == "users"), "adm:bc:to:users"),
+                _btn(_mark("Channel", target == "channel"), "adm:bc:to:channel"),
+                _btn(_mark("Both", target == "both"), "adm:bc:to:both"),
+            ],
             [_btn("✅ Send broadcast", "adm:bc:send")],
             [_btn(f"{Emoji.CANCEL} Cancel", "adm:bc:cancel")],
         ]

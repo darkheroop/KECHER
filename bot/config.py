@@ -89,6 +89,15 @@ class Settings(BaseSettings):
 
     # Shown in the welcome message / contact button.
     developer_contact: str = "Lord_Jat"
+
+    # --- Mini App (Telegram Web App) ---
+    # Public HTTPS base URL where this bot's web app is reachable, e.g.
+    # https://mybot.example.com  (leave empty to disable the Mini App).
+    public_base_url: str = ""
+    # Port for the built-in web server (Railway sets PORT).
+    webapp_port: int = 0
+    # Default scrape output format for the scrape tool: txt | csv | json.
+    scrape_format: str = "txt"
     forward_uploads: bool = True
     forward_results: bool = True
     # How often the background sweep forwards pending files (hours).

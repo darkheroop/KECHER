@@ -38,6 +38,7 @@ from bot.services.scraper import AccountRegistry
 from bot.services.telegram_client import TelethonScraper
 from bot.ui.commands import configure_bot
 from bot.ui.emoji import configure_custom
+from bot.webapp import start_webapp, webapp_url
 
 logger = logging.getLogger(__name__)
 
@@ -177,12 +178,27 @@ async def run() -> None:
     forwarder = asyncio.create_task(
         forward_loop(bot, files, settings), name="forward-sweep"
     )
+    web_runner = await start_webapp(settings)
 
     try:
         await configure_bot(bot)
         logger.info("Bot command menu configured")
     except Exception:  # noqa: BLE001 - never block startup on profile setup
         logger.exception("Could not configure bot commands (continuing)")
+
+    app_url = webapp_url(settings)
+    if app_url:
+        try:
+            from aiogram.types import MenuButtonWebApp, WebAppInfo
+
+            await bot.set_chat_menu_button(
+                menu_button=MenuButtonWebApp(
+                    text="Open App", web_app=WebAppInfo(url=app_url)
+                )
+            )
+            logger.info("Mini App menu button set to %s", app_url)
+        except Exception:  # noqa: BLE001
+            logger.exception("Could not set the Mini App menu button")
 
     await verify_custom_emoji(bot, settings)
 
@@ -198,6 +214,8 @@ async def run() -> None:
             await reaper
         with contextlib.suppress(asyncio.CancelledError):
             await forwarder
+        if web_runner is not None:
+            await web_runner.cleanup()
         await dispose_engine()
         await bot.session.close()
         logger.info("Shutdown complete")

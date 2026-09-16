@@ -22,6 +22,8 @@ DEFAULTS = {
     "keyword_mode": "contains",
     "include_media": False,
     "to_channel": True,
+    "dry_run": False,
+    "format": "txt",
 }
 
 
@@ -31,7 +33,6 @@ def _key(telegram_id: int) -> str:
 
 async def load_prefs(telegram_id: int) -> dict:
     values = dict(DEFAULTS)
-    # Environment default for media can be handy; keep False otherwise.
     _ = get_settings()
     try:
         async with session_scope() as session:

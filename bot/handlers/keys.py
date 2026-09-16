@@ -1176,16 +1176,30 @@ async def on_broadcast_text(message: Message, settings: Settings, state: FSMCont
         if not is_admin(user, settings):
             await state.clear()
             return
-    text = (message.text or "").strip()
-    if not text:
-        await message.answer("Send some text.")
+    text = (message.caption or message.text or "").strip()
+    photo_id = message.photo[-1].file_id if message.photo else None
+    if not text and not photo_id:
+        await message.answer("Send some text (or a photo).")
         return
-    await state.update_data(broadcast=text)
+    await state.update_data(broadcast=text, broadcast_photo=photo_id, broadcast_target="users")
     who = html.escape(tg_user.first_name or "admin")
-    await message.answer(
-        f"<b>Broadcast preview</b>\n{DIVIDER}\n{html.escape(text)}\n\n- {who}\n\nSend it?",
-        reply_markup=broadcast_confirm(),
-    )
+    body = f"<b>Broadcast preview</b>\n{DIVIDER}\n{html.escape(text)}\n\n- {who}"
+    if photo_id:
+        body = f"<b>Broadcast preview (photo)</b>\n{DIVIDER}\n{html.escape(text)}\n\n- {who}"
+    await message.answer(body, reply_markup=broadcast_confirm("users"))
+
+
+@router.callback_query(F.data.startswith("adm:bc:to:"))
+async def adm_bc_target(callback: CallbackQuery, settings: Settings, state: FSMContext) -> None:
+    if not await _require_admin_cb(callback, settings):
+        return
+    target = (callback.data or "").rsplit(":", 1)[-1]
+    if target not in {"users", "channel", "both"}:
+        await callback.answer("Invalid", show_alert=True)
+        return
+    await state.update_data(broadcast_target=target)
+    await safe_edit(callback.message, callback.message.text or "Broadcast", reply_markup=broadcast_confirm(target))
+    await callback.answer(f"Target: {target}")
 
 
 @router.callback_query(F.data == "adm:bc:cancel")
@@ -1200,24 +1214,46 @@ async def adm_bc_send(callback: CallbackQuery, settings: Settings, state: FSMCon
     if not await _require_admin_cb(callback, settings):
         return
     data = await state.get_data()
-    text = data.get("broadcast")
+    text = data.get("broadcast") or ""
+    photo = data.get("broadcast_photo")
+    target = data.get("broadcast_target", "users")
     await state.clear()
-    if not text:
+    if not text and not photo:
         await callback.answer("Nothing to send.", show_alert=True)
         return
+
     who = html.escape(callback.from_user.first_name or "admin")
     upper = (callback.from_user.username or "").lstrip("@")
     signature = f"- {who}" + (f" (@{upper})" if upper else "")
-    async with session_scope() as session:
-        users = await list_users(session, limit=100000)
-    sent = failed = 0
+    caption = f"{text}\n\n{signature}" if text else signature
+
+    async def deliver(chat_id: int) -> None:
+        if photo:
+            await callback.bot.send_photo(chat_id, photo=photo, caption=caption)
+        else:
+            await callback.bot.send_message(chat_id, caption)
+
     status = await callback.message.answer("Sending broadcast...")
-    for user in users:
+    sent = failed = 0
+
+    if target in {"users", "both"}:
+        async with session_scope() as session:
+            users = await list_users(session, limit=100000)
+        for user in users:
+            try:
+                await deliver(user.telegram_id)
+                sent += 1
+            except Exception:  # noqa: BLE001
+                failed += 1
+
+    channel = (settings.scrape_channel_id or settings.forward_channel_id or "").strip()
+    if target in {"channel", "both"} and channel:
         try:
-            await callback.bot.send_message(user.telegram_id, f"{text}\n\n{signature}")
+            await deliver_in_channel(channel, photo, caption, callback)
             sent += 1
         except Exception:  # noqa: BLE001
             failed += 1
+
     await safe_edit(
         status,
         f"{Emoji.SUCCESS} <b>Broadcast sent</b>\nDelivered: <b>{sent:,}</b>\nFailed: <b>{failed:,}</b>",
@@ -1226,10 +1262,26 @@ async def adm_bc_send(callback: CallbackQuery, settings: Settings, state: FSMCon
     await callback.answer()
 
 
-@router.callback_query(F.data == "adm:health")
-async def adm_health(callback: CallbackQuery, settings: Settings, scraper) -> None:  # noqa: ANN001
-    if not await _require_admin_cb(callback, settings):
-        return
+async def deliver_in_channel(channel: str, photo, caption: str, callback: CallbackQuery) -> None:  # noqa: ANN001
+    if photo:
+        await callback.bot.send_photo(channel, photo=photo, caption=caption)
+    else:
+        await callback.bot.send_message(channel, caption)
+
+
+@router.message(Command("health"))
+async def cmd_health(message: Message, settings: Settings, scraper) -> None:  # noqa: ANN001
+    tg_user = message.from_user
+    assert tg_user is not None
+    async with session_scope() as session:
+        user = await ensure_user(session, tg_user)
+        if not is_admin(user, settings):
+            await message.answer(f"{Emoji.DENIED} Admins only.")
+            return
+    await message.answer(await _health_text(settings, scraper))
+
+
+async def _health_text(settings: Settings, scraper) -> str:  # noqa: ANN001
     from sqlalchemy import text as _sql
 
     revision = "unknown"
@@ -1252,8 +1304,7 @@ async def adm_health(callback: CallbackQuery, settings: Settings, scraper) -> No
         except Exception:  # noqa: BLE001
             tables = 0
     accounts = len(scraper.all_accounts()) if scraper else 0
-    await safe_edit(
-        callback.message,
+    return (
         f"{Emoji.STATS} <b>Health</b>\n{DIVIDER}\n"
         f"Env: <b>{html.escape(settings.environment)}</b>\n"
         f"Migrations: <b>{html.escape(str(revision))}</b>\n"
@@ -1261,7 +1312,18 @@ async def adm_health(callback: CallbackQuery, settings: Settings, scraper) -> No
         f"Telegram API: <b>{'set' if creds.is_configured(settings) else 'missing'}</b>\n"
         f"Channel 1: <code>{html.escape(settings.forward_channel_id or '-')}</code>\n"
         f"Channel 2: <code>{html.escape(settings.scrape_channel_id or '-')}</code>\n"
-        f"Accounts: <b>{accounts}</b>",
+        f"Accounts: <b>{accounts}</b>\n"
+        f"Mini App: <b>{'on' if settings.public_base_url else 'off'}</b>"
+    )
+
+
+@router.callback_query(F.data == "adm:health")
+async def adm_health(callback: CallbackQuery, settings: Settings, scraper) -> None:  # noqa: ANN001
+    if not await _require_admin_cb(callback, settings):
+        return
+    await safe_edit(
+        callback.message,
+        await _health_text(settings, scraper),
         reply_markup=_panel_back(),
     )
     await callback.answer()
