@@ -22,3 +22,7 @@ logs/
 # OS
 Thumbs.db
 .DS_Store
+
+# Mini App build artifacts
+webapp/node_modules/
+

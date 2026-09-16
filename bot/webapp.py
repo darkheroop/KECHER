@@ -9,12 +9,16 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 
 from aiohttp import web
 
 from bot.config import Settings
 
 logger = logging.getLogger(__name__)
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DIST_DIR = PROJECT_ROOT / "webapp" / "dist"
 
 PAGE = """<!DOCTYPE html>
 <html lang="en">
@@ -88,18 +92,25 @@ PAGE = """<!DOCTYPE html>
 """
 
 
-async def _index(request: web.Request) -> web.Response:
-    return web.Response(text=PAGE, content_type="text/html")
-
-
 async def _healthz(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+async def _app_index(request: web.Request) -> web.StreamResponse:
+    """Serve the built Mini App (falls back to the inline page)."""
+    index = DIST_DIR / "index.html"
+    if index.is_file():
+        return web.FileResponse(index)
+    return web.Response(text=PAGE, content_type="text/html")
+
+
 def create_app() -> web.Application:
     app = web.Application()
-    app.router.add_get("/", _index)
-    app.router.add_get("/miniapp", _index)
+    app.router.add_get("/", _app_index)
+    app.router.add_get("/miniapp", _app_index)
+    app.router.add_get("/miniapp/", _app_index)
+    if DIST_DIR.is_dir():
+        app.router.add_static("/miniapp/assets", DIST_DIR / "assets", name="assets")
     app.router.add_get("/healthz", _healthz)
     return app
 
