@@ -147,6 +147,11 @@ def create_app(settings: Settings | None = None) -> web.Application:
 def webapp_url(settings: Settings) -> str:
     base = (settings.public_base_url or "").strip().rstrip("/")
     if not base:
+        # Fall back to the domain Railway injects automatically.
+        railway = (os.getenv("RAILWAY_PUBLIC_DOMAIN") or "").strip().rstrip("/")
+        if railway:
+            base = railway if railway.startswith(("http://", "https://")) else f"https://{railway}"
+    if not base:
         return ""
     if not base.startswith(("http://", "https://")):
         base = "https://" + base
