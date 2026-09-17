@@ -17,10 +17,13 @@ from aiogram.types import (
 )
 
 from bot.config import Settings
+from bot.db.engine import session_scope
+from bot.db.repositories import get_or_create_user
 from bot.handlers.menu import help_text, welcome_text
+from bot.security.access import is_admin
 from bot.services.file_manager import FileManager
 from bot.ui.keyboards import main_menu
-from bot.webapp import webapp_url
+from bot.webapp import DIST_DIR, webapp_url
 
 logger = logging.getLogger(__name__)
 router = Router(name="webapp")
@@ -74,6 +77,45 @@ async def cmd_app(message: Message, settings: Settings) -> None:
         ]
     )
     await message.answer("📱 Tap to open the app:", reply_markup=keyboard)
+
+
+@router.message(Command("apptest"))
+async def cmd_apptest(message: Message, settings: Settings) -> None:
+    """Admin diagnostic: is the public Mini App URL actually reachable?"""
+    tg_user = message.from_user
+    assert tg_user is not None
+    async with session_scope() as session:
+        user, _ = await get_or_create_user(session, tg_user.id)
+        if not is_admin(user, settings):
+            await message.answer(f"{Emoji.DENIED} Admins only.")
+            return
+
+    url = webapp_url(settings)
+    lines = [f"{Emoji.STATS} <b>Mini App diagnostic</b>", "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄"]
+    lines.append(f"PUBLIC_BASE_URL: <code>{settings.public_base_url or '(empty)'}</code>")
+    lines.append(f"Built app present: <b>{'yes' if DIST_DIR.is_dir() else 'no'}</b>")
+    if not url:
+        lines.append("❌ No public URL configured -> set PUBLIC_BASE_URL and redeploy.")
+        await message.answer("\n".join(lines))
+        return
+
+    lines.append(f"URL: <code>{url}</code>")
+    try:
+        import aiohttp
+
+        timeout = aiohttp.ClientTimeout(total=15)
+        async with aiohttp.ClientSession(timeout=timeout) as client:
+            async with client.get(url) as response:
+                body = await response.text()
+                lines.append(f"HTTP: <b>{response.status}</b>")
+                lines.append(f"Contains app: <b>{'yes' if 'Card File Bot' in body else 'no'}</b>")
+                if response.status != 200:
+                    lines.append("❌ The domain does not reach this bot service.")
+    except Exception as exc:  # noqa: BLE001
+        lines.append(f"❌ Request failed: <code>{type(exc).__name__}</code>")
+        lines.append("The domain is not pointing at this service (or is not HTTPS).")
+
+    await message.answer("\n".join(lines))
 
 
 @router.message(F.web_app_data)
