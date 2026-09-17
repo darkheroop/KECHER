@@ -183,7 +183,19 @@ def specials_menu() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [_btn(f"{Emoji.CLONE} Clone a channel", "spec:clone")],
             [_btn(f"{Emoji.FORWARD} Messages → .txt", "spec:txt")],
+            [_btn(f"{Emoji.PAGE} File name", "spec:name")],
             [_btn(f"{Emoji.BACK} Back", "menu:home")],
+        ]
+    )
+
+
+def filename_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_btn("✏️ Set saved name", "spec:name:set")],
+            [_btn("1️⃣ Use for next output only", "spec:name:once")],
+            [_btn("♻️ Reset to default", "spec:name:reset")],
+            [_btn(f"{Emoji.BACK} Back", "spec:menu")],
         ]
     )
 
@@ -430,6 +442,7 @@ def admin_panel(forward_on: bool, access_on: bool) -> InlineKeyboardMarkup:
                 _btn("📨 Scrape channel", "adm:panel:schan"),
             ],
             [_btn("🔐 Telegram API credentials", "adm:panel:api")],
+            [_btn("🏷 File suffix", "adm:panel:suffix")],
             [_btn("👥 All accounts", "adm:accts")],
             [
                 _btn("📣 Broadcast", "adm:bcast"),

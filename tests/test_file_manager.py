@@ -22,7 +22,7 @@ def test_allocate_is_unique(settings) -> None:
     first = fm.allocate(1, "data.txt")
     first.path.write_text("a")
     second = fm.allocate(1, "data.txt")
-    assert second.safe_name == "data_1.txt"
+    assert second.safe_name == "data_2.txt"
     assert second.path != first.path
 
 

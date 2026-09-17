@@ -25,6 +25,10 @@ DEFAULTS = {
     "to_channel": True,
     "dry_run": False,
     "format": "txt",
+    # Output filename template (supports {op},{index},{keyword},{source},{date},{time})
+    # and a one-shot override that applies to the next output only.
+    "filename": "",
+    "filename_once": "",
 }
 
 

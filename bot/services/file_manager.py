@@ -97,7 +97,7 @@ class FileManager:
         stem, dot, ext = safe_name.rpartition(".")
         if not dot:
             stem, ext = safe_name, ""
-        counter = 1
+        counter = 2
         while safe_join(directory, candidate).exists():
             candidate = f"{stem}_{counter}{'.' + ext if dot else ''}"
             counter += 1

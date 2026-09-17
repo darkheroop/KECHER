@@ -32,7 +32,7 @@ from bot.handlers.states import Flow
 from bot.jobs.execution import run_with_progress
 from bot.jobs.progress import ProgressReporter, TelegramNotifier
 from bot.security.access import is_admin
-from bot.services import prefs
+from bot.services import prefs, naming
 from bot.services.cards import clean_cards, merge_files
 from bot.services.engine import format_duration
 from bot.services.file_manager import FileManager
@@ -1089,7 +1089,12 @@ async def _execute_scrape(
             stopped = True
             break
         title = source.title or source.tg_peer_ref
-        raw = file_manager.allocate(telegram_id, f"Raw-{index}.txt", subdir="out")
+        suffix_index = index if len(sources) > 1 else None
+        raw = file_manager.allocate(
+            telegram_id,
+            await naming.output_name(telegram_id, "scraped", index=suffix_index),
+            subdir="out",
+        )
         status = await callback.message.answer(
             f"{Emoji.SCRAPE} <b>Source {index}/{len(sources)}</b>\n{DIVIDER}\n"
             f"{Emoji.INBOX} <b>{html.escape(title)}</b>\n"
@@ -1138,7 +1143,9 @@ async def _execute_scrape(
             continue
 
         cleaned_alloc = file_manager.allocate(
-            telegram_id, f"Cleaned-{index}.txt", subdir="out"
+            telegram_id,
+            await naming.output_name(telegram_id, "cleaned", index=suffix_index),
+            subdir="out",
         )
         report = await asyncio.to_thread(clean_cards, raw.path, cleaned_alloc.path)
         raw_stored = file_manager.finalize(raw)
@@ -1276,7 +1283,9 @@ async def scr_do_clean(
     except (ValueError, OSError):
         await callback.answer("File expired.", show_alert=True)
         return
-    out = file_manager.allocate(telegram_id, f"{title} Cleaned.txt", subdir="out")
+    out = file_manager.allocate(
+        telegram_id, await naming.output_name(telegram_id, "cleaned"), subdir="out"
+    )
     status = await callback.message.answer(f"{Emoji.CLEAN} Cleaning {title}…")
     reporter = ProgressReporter(
         TelegramNotifier(callback.bot),
@@ -1326,7 +1335,9 @@ async def scr_combine(
     paths = [
         file_manager.resolve(telegram_id, rel, create_parent=False) for _, rel in results
     ]
-    out = file_manager.allocate(telegram_id, "Scrape combined.txt", subdir="out")
+    out = file_manager.allocate(
+        telegram_id, await naming.output_name(telegram_id, "combined"), subdir="out"
+    )
     status = await callback.message.answer(f"{Emoji.MERGE} Combining {len(paths)} file(s)…")
     report = await asyncio.to_thread(merge_files, paths, out.path)
     stored = file_manager.finalize(out)

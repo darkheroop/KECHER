@@ -25,6 +25,7 @@ from bot.handlers.cards import _tag
 from bot.handlers.common import ensure_user
 from bot.handlers.states import Flow
 from bot.services import prefs
+from bot.services import naming
 from bot.services.cards import dedup_cards
 from bot.services.engine import format_duration
 from bot.services.file_manager import FileManager
@@ -40,6 +41,7 @@ from bot.ui.keyboards import (
     clone_options,
     clone_picker,
     clone_progress,
+    filename_menu,
     specials_collect,
     specials_menu,
 )
@@ -48,8 +50,21 @@ from bot.ui.render import safe_edit
 router = Router(name="specials")
 
 DIVIDER = "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄"
-DRAFT_STEM = "Msgs"
 _EDIT_INTERVAL = 1.2
+
+SET_NAME_TEXT = (
+    f"{Emoji.PAGE} <b>Custom file name</b>\n{DIVIDER}\n"
+    "Send the name (the <code>.txt</code> is added automatically).\n\n"
+    "<b>Placeholders</b>\n"
+    "<code>{op}</code> — cleaned / live / deduped / filtered / part / scraped\n"
+    "<code>{index}</code> — part or source number\n"
+    "<code>{keyword}</code> · <code>{source}</code> "
+    "· <code>{date}</code> · <code>{time}</code>\n\n"
+    "Examples:\n"
+    "<code>mycards_{op}</code> → <code>mycards_cleaned.txt</code>\n"
+    "<code>{source}_{op}</code> → <code>VIP_group_filtered.txt</code>\n\n"
+    "Send <code>-</code> to clear."
+)
 
 MENU_TEXT = (
     f"{Emoji.SPECIALS} <b>SPECIALS</b>\n{DIVIDER}\n"
@@ -257,8 +272,9 @@ async def _start_collect(
     message: Message, tg_user, state: FSMContext, file_manager: FileManager
 ) -> None:  # noqa: ANN001
     await state.clear()
-    stamp = datetime.now(UTC).strftime("%Y-%m-%d %H%M")
-    draft = file_manager.allocate(tg_user.id, f"{DRAFT_STEM} {stamp}.txt", subdir="out")
+    draft = file_manager.allocate(
+        tg_user.id, await naming.output_name(tg_user.id, "messages"), subdir="out"
+    )
     try:
         draft.path.write_text("", encoding="utf-8")
     except OSError:
@@ -317,7 +333,9 @@ async def _build(
     try:
         if dedupe:
             out = file_manager.allocate(
-                telegram_id, f"{draft_path.stem} deduped.txt", subdir="out"
+                telegram_id,
+                await naming.output_name(telegram_id, "deduped"),
+                subdir="out",
             )
             report = await asyncio.to_thread(dedup_cards, draft_path, out.path)
             if report.unique == 0:
@@ -651,6 +669,113 @@ async def spec_txt(
     if callback.message is not None:
         await _start_collect(callback.message, callback.from_user, state, file_manager)
     await callback.answer("Forward your messages now")
+
+
+# --------------------------------------------------------------------------- #
+# Custom output file name
+# --------------------------------------------------------------------------- #
+async def _show_name_menu(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await prefs.load_prefs(callback.from_user.id)
+    saved = str(data.get("filename") or "").strip()
+    once = str(data.get("filename_once") or "").strip()
+    suffix = naming.suffix().strip() or "none"
+    lines = [
+        f"{Emoji.PAGE} <b>Output file name</b>\n{DIVIDER}",
+        f"Saved · {naming.describe(saved)}",
+        f"Next output · {naming.describe(once) if once else '—'}",
+        "",
+        "Placeholders: <code>{op}</code> <code>{index}</code> <code>{keyword}</code> "
+        "<code>{source}</code> <code>{date}</code> <code>{time}</code>",
+        "Default · <code>{op}</code> → <code>cleaned.txt</code>, split → "
+        "<code>part-1.txt</code>",
+        "",
+        f"Suffix · <code>{html.escape(suffix)}</code>",
+    ]
+    await safe_edit(callback.message, "\n".join(lines), reply_markup=filename_menu())
+
+
+@router.callback_query(F.data == "spec:name")
+async def spec_name(callback: CallbackQuery, state: FSMContext) -> None:
+    await _show_name_menu(callback, state)
+    await callback.answer()
+
+
+async def _prompt_filename(callback: CallbackQuery, state: FSMContext, mode: str) -> None:
+    await state.set_state(Flow.awaiting_filename)
+    await state.update_data(name_mode=mode)
+    await safe_edit(callback.message, SET_NAME_TEXT)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "spec:name:set")
+async def spec_name_set(callback: CallbackQuery, state: FSMContext) -> None:
+    await _prompt_filename(callback, state, "saved")
+
+
+@router.callback_query(F.data == "spec:name:once")
+async def spec_name_once(callback: CallbackQuery, state: FSMContext) -> None:
+    await _prompt_filename(callback, state, "once")
+
+
+@router.callback_query(F.data == "spec:name:reset")
+async def spec_name_reset(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await prefs.load_prefs(callback.from_user.id)
+    data["filename"] = ""
+    data["filename_once"] = ""
+    await prefs.save_prefs(callback.from_user.id, data)
+    await callback.answer("Reset to default")
+    await _show_name_menu(callback, state)
+
+
+@router.message(Flow.awaiting_filename)
+async def on_filename(message: Message, state: FSMContext) -> None:
+    if message.from_user is None:
+        return
+    value = (message.text or "").strip()
+    mode = (await state.get_data()).get("name_mode", "saved")
+    await state.set_state(None)
+    key = "filename" if mode == "saved" else "filename_once"
+    data = await prefs.load_prefs(message.from_user.id)
+    data[key] = "" if value in {"-", ""} else value
+    await prefs.save_prefs(message.from_user.id, data)
+    preview = naming.render(value or None, op="cleaned")
+    label = "Saved name" if mode == "saved" else "Next output"
+    await message.answer(
+        f"{Emoji.SUCCESS} <b>{label} set</b>\n{DIVIDER}\n"
+        f"Preview · <code>{html.escape(preview)}</code>",
+        reply_markup=filename_menu(),
+    )
+
+
+@router.message(Command("filename"))
+async def cmd_filename(message: Message, state: FSMContext) -> None:
+    if message.from_user is None:
+        return
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2:
+        data = await prefs.load_prefs(message.from_user.id)
+        saved = str(data.get("filename") or "").strip()
+        once = str(data.get("filename_once") or "").strip()
+        await message.answer(
+            f"{Emoji.PAGE} <b>Output file name</b>\n{DIVIDER}\n"
+            f"Saved · {naming.describe(saved)}\n"
+            f"Next output · {naming.describe(once) if once else '—'}\n\n"
+            "Usage:\n<code>/filename mycards_{op}</code> — save a template\n"
+            "<code>/filename -</code> — reset to default\n"
+            "Tap File name in /specials for the next-output option.",
+            reply_markup=filename_menu(),
+        )
+        return
+    value = parts[1].strip()
+    data = await prefs.load_prefs(message.from_user.id)
+    data["filename"] = "" if value in {"-", "reset"} else value
+    await prefs.save_prefs(message.from_user.id, data)
+    preview = naming.render(value if value not in {"-", "reset"} else None, op="cleaned")
+    await message.answer(
+        f"{Emoji.SUCCESS} <b>File name saved</b>\n{DIVIDER}\n"
+        f"Preview · <code>{html.escape(preview)}</code>",
+        reply_markup=filename_menu(),
+    )
 
 
 # --------------------------------------------------------------------------- #

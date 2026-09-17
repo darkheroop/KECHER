@@ -53,6 +53,7 @@ from bot.security.access import (
     is_admin,
 )
 from bot.services import credentials as creds
+from bot.services import naming
 from bot.services.keys import (
     format_duration,
     normalize_code,
@@ -234,6 +235,7 @@ async def _panel_view(settings: Settings) -> tuple[str, InlineKeyboardMarkup]:
     channel = (settings.forward_channel_id or "").strip() or "not set"
     scrape_channel = (settings.scrape_channel_id or "").strip() or "(falls back)"
     api = "set ✅" if creds.is_configured(settings) else "not set ❌"
+    suffix = naming.suffix().strip() or "none"
     text = (
         f"{Emoji.ADMIN} <b>Admin panel</b>\n"
         "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
@@ -241,7 +243,8 @@ async def _panel_view(settings: Settings) -> tuple[str, InlineKeyboardMarkup]:
         f"   Channel 1: <code>{html.escape(channel)}</code>\n"
         f"📨 Channel 2 (scrape): <code>{html.escape(scrape_channel)}</code>\n"
         f"🔐 Access required: <b>{'ON' if access_on else 'OFF'}</b>\n"
-        f"🔑 Telegram API: <b>{api}</b>\n\n"
+        f"🔑 Telegram API: <b>{api}</b>\n"
+        f"🏷 File suffix: <code>{html.escape(suffix)}</code>\n\n"
         f"👥 Users: <b>{users:,}</b>\n"
         f"👑 Admins: <b>{admins:,}</b>\n"
         f"✅ Active: <b>{active:,}</b>\n"
@@ -290,6 +293,35 @@ async def on_scrape_channel(message: Message, state: FSMContext, settings: Setti
     await creds.save_channel(settings, "scrape", "" if value == "-" else value)
     text, keyboard = await _panel_view(settings)
     await message.answer(f"{Emoji.SUCCESS} Channel 2 saved.", reply_markup=keyboard)
+
+
+@router.callback_query(F.data == "adm:panel:suffix")
+async def panel_suffix(
+    callback: CallbackQuery, state: FSMContext, settings: Settings
+) -> None:
+    if not await _require_admin_cb(callback, settings):
+        return
+    await state.set_state(Flow.awaiting_suffix)
+    await safe_edit(
+        callback.message,
+        f"🏷 <b>Output file suffix</b>\n"
+        "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
+        f"Current · <code>{html.escape(naming.suffix() or 'none')}</code>\n\n"
+        "This is added to every delivered file name, before the extension.\n"
+        "Example: <code>cleaned.txt</code> → "
+        "<code>cleaned@Lord_Jat.txt</code>\n\n"
+        "Send the new suffix, or <code>-</code> to remove it.",
+    )
+    await callback.answer()
+
+
+@router.message(Flow.awaiting_suffix)
+async def on_suffix(message: Message, state: FSMContext, settings: Settings) -> None:
+    value = (message.text or "").strip()
+    await state.set_state(None)
+    await creds.save_suffix("" if value == "-" else value)
+    text, keyboard = await _panel_view(settings)
+    await message.answer(f"{Emoji.SUCCESS} File suffix saved.", reply_markup=keyboard)
 
 
 @router.callback_query(F.data == "adm:panel:api")
