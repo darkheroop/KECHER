@@ -1021,6 +1021,22 @@ async def scr_run(
         raw_stored = file_manager.finalize(raw)
         cleaned = file_manager.finalize(cleaned_alloc)
 
+        totals["matched"] += result.exported
+        totals["valid"] += report.valid
+
+        # Never try to send an empty file (Telegram rejects it).
+        if raw_stored.size_bytes == 0:
+            await safe_edit(
+                status,
+                f"{Emoji.INFO} <b>{html.escape(title)}</b>\n"
+                f"Scanned {result.scanned:,} · <b>0 matches</b> for the current "
+                "keywords/filters.\n<i>Nothing to send.</i>",
+            )
+            for stale in (raw.path, cleaned_alloc.path):
+                with contextlib.suppress(Exception):
+                    stale.unlink(missing_ok=True)
+            continue
+
         await safe_edit(
             status,
             f"{Emoji.SUCCESS} <b>{html.escape(title)}</b>\n"
@@ -1061,8 +1077,6 @@ async def scr_run(
             reply_markup=clean_prompt(),
         )
         results.append((title, raw_stored.rel_path))
-        totals["matched"] += result.exported
-        totals["valid"] += report.valid
 
         if admin and post_channel:
             try:
