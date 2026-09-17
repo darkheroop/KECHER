@@ -48,6 +48,8 @@ from bot.ui.keyboards import (
     defaults_menu,
     scrape_intro,
     scrape_panel,
+    scrape_confirm,
+    scrape_progress,
     scrape_recap,
     scrape_sources,
 )
@@ -885,6 +887,77 @@ def _parse_dt(value: str | None) -> datetime | None:
 
 @router.callback_query(F.data == "scr:run")
 async def scr_run(
+    callback: CallbackQuery, state: FSMContext, settings: Settings
+) -> None:
+    sc = await _load_sc(state)
+    selected = [int(x) for x in (sc.get("selected") or [])]
+    if not selected:
+        await callback.answer("Pick at least one source", show_alert=True)
+        return
+    async with session_scope() as session:
+        user = await ensure_user(session, callback.from_user)
+        sources = []
+        for sid in selected:
+            src = await get_authorized_source(session, user.id, sid)
+            if src is not None:
+                sources.append(src)
+    if not sources:
+        await callback.answer("Sources not found", show_alert=True)
+        return
+    sc["source_title"] = ", ".join((s.title or s.tg_peer_ref) for s in sources)
+    await _save_sc(state, sc)
+    if callback.message is not None:
+        await safe_edit(
+            callback.message, _confirm_text(sc, sources), reply_markup=scrape_confirm()
+        )
+    await callback.answer()
+
+
+def _confirm_text(sc: dict, sources: list) -> str:
+    keywords = ", ".join(sc.get("keywords") or []) or "any"
+    fmt = str(sc.get("format", "txt")).upper()
+    mode = "Cards" if sc.get("mode") == "cards" else "Messages"
+    dates = {
+        "none": "all time",
+        "7": "last 7d",
+        "30": "last 30d",
+        "90": "last 90d",
+        "month": "this month",
+        "prevmonth": "last month",
+        "custom": "custom range",
+    }.get(sc.get("dates", "none"), "all time")
+    listing = "\n".join(f"  {Emoji.INBOX} {html.escape(s.title or s.tg_peer_ref)}" for s in sources)
+    return (
+        f"{Emoji.START} <b>Ready to scrape</b>\n{DIVIDER}\n"
+        f"<b>Sources · {len(sources)}</b>\n{listing}\n\n"
+        f"{Emoji.FIND} Keywords · <b>{html.escape(keywords)}</b>\n"
+        f"🎚 Limit · <b>{sc.get('limit') or 'All'}</b>   {mode}\n"
+        f"{Emoji.CALENDAR} Dates · <b>{dates}</b>   {fmt}\n"
+        f"{Emoji.CLEAN} Auto-clean · <b>{'on' if sc.get('autoclean', True) else 'off'}</b>"
+        f"   {Emoji.INBOX} Channel · <b>{'on' if sc.get('to_channel', True) else 'off'}</b>\n\n"
+        "<i>You can stop the run at any time.</i>"
+    )
+
+
+@router.callback_query(F.data == "scr:go")
+async def scr_go(
+    callback: CallbackQuery,
+    state: FSMContext,
+    scraper,  # noqa: ANN001
+    file_manager: FileManager,
+    settings: Settings,
+) -> None:
+    await state.update_data(sc_stop=False)
+    await _execute_scrape(callback, state, scraper, file_manager, settings)
+
+
+@router.callback_query(F.data == "scr:stop")
+async def scr_stop(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.update_data(sc_stop=True)
+    await callback.answer("Stopping after this source…")
+
+
+async def _execute_scrape(
     callback: CallbackQuery,
     state: FSMContext,
     scraper,  # noqa: ANN001
@@ -975,14 +1048,26 @@ async def scr_run(
     sources = sources[: max(1, settings.scrape_max_sources)]
     results: list[tuple[str, object]] = []
     totals = {"matched": 0, "valid": 0}
+    stopped = False
+    if callback.message is not None:
+        await safe_edit(
+            callback.message,
+            f"{Emoji.SCRAPE} <b>Scrape started</b>\n{DIVIDER}\n"
+            f"{len(sources)} source(s) queued…",
+            reply_markup=None,
+        )
     for index, source in enumerate(sources, start=1):
+        if (await state.get_data()).get("sc_stop"):
+            stopped = True
+            break
         title = source.title or source.tg_peer_ref
         raw = file_manager.allocate(telegram_id, f"Raw-{index}.txt", subdir="out")
         status = await callback.message.answer(
-            f"{Emoji.SCRAPE} Scraping <b>{html.escape(title)}</b>"
-            f"  ·  {index}/{len(sources)}\n"
+            f"{Emoji.SCRAPE} <b>Source {index}/{len(sources)}</b>\n{DIVIDER}\n"
+            f"{Emoji.INBOX} <b>{html.escape(title)}</b>\n"
             f"<i>{limit or 'All'} msg · {dates} · {sc.get('mode', 'messages')} · "
-            f"{fmt.upper()}</i>"
+            f"{fmt.upper()}</i>",
+            reply_markup=scrape_progress(),
         )
         reporter = ProgressReporter(
             TelegramNotifier(callback.bot),
@@ -1109,9 +1194,13 @@ async def scr_run(
             await asyncio.sleep(2)  # gentle pacing between sources (account safety)
 
     elapsed = max(1, int(time.monotonic() - started))
+    stopped = stopped or bool((await state.get_data()).get("sc_stop"))
+    head = (
+        f"⏹ <b>Scrape stopped</b>" if stopped else f"{Emoji.SUCCESS} <b>Scrape finished</b>"
+    )
     await callback.message.answer(
-        f"{Emoji.SUCCESS} <b>Scrape finished</b>\n{DIVIDER}\n"
-        f"{Emoji.SCRAPE} Sources: <b>{len(sources)}</b>\n"
+        f"{head}\n{DIVIDER}\n"
+        f"{Emoji.SCRAPE} Sources: <b>{len(results)}/{len(sources)}</b>\n"
         f"{Emoji.FIND} Matched: <b>{totals['matched']:,}</b>\n"
         f"{Emoji.CLEAN} Valid records: <b>{totals['valid']:,}</b>\n"
         f"{Emoji.TIME} Time: <b>{elapsed}s</b>",

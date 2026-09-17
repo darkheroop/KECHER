@@ -18,9 +18,11 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
+from sqlalchemy import inspect
 
 from bot.config import Settings, get_settings
-from bot.db.engine import dispose_engine, init_db
+from bot.db.engine import dispose_engine, get_engine, init_db
+from bot.db.models import Base
 from bot.handlers import routers
 from bot.handlers.errors import register_error_handler
 from bot.logging_setup import setup_logging
@@ -46,23 +48,70 @@ REAP_INTERVAL_SECONDS = 300
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def _upgrade_sync() -> None:
-    from alembic import command
+def _alembic_config() -> "Config":  # noqa: F821
     from alembic.config import Config
 
     config = Config(str(PROJECT_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(PROJECT_ROOT / "bot" / "db" / "migrations"))
-    command.upgrade(config, "head")
+    return config
+
+
+def _upgrade_sync() -> None:
+    from alembic import command
+
+    command.upgrade(_alembic_config(), "head")
+
+
+def _stamp_sync() -> None:
+    from alembic import command
+
+    command.stamp(_alembic_config(), "head")
+
+
+def _db_target(url: str) -> str:
+    """Describe the DB target without leaking credentials."""
+    try:
+        from sqlalchemy.engine import make_url
+
+        parsed = make_url(url)
+        host = parsed.host or "local"
+        return f"{parsed.drivername}://{host}:{parsed.port or ''}/{parsed.database or ''}"
+    except Exception:  # noqa: BLE001
+        return "database"
+
+
+async def _missing_tables(settings: Settings) -> list[str]:
+    engine = get_engine(settings)
+    async with engine.connect() as conn:
+        names = await conn.run_sync(lambda c: set(inspect(c).get_table_names()))
+    return sorted(set(Base.metadata.tables) - names)
 
 
 async def ensure_schema(settings: Settings) -> None:
-    """Apply Alembic migrations at startup (works even if the host skips them)."""
+    """Guarantee the schema exists, whatever the host did (or didn't) run."""
+    logger.info("Database target: %s", _db_target(settings.database_url))
+
+    migrated = False
     try:
         await asyncio.to_thread(_upgrade_sync)
-        logger.info("Database migrations applied (head)")
-    except Exception:  # noqa: BLE001 - fall back to create_all
-        logger.exception("Alembic upgrade failed; falling back to create_all")
+        migrated = True
+        logger.info("Alembic migrations applied (head)")
+    except Exception:  # noqa: BLE001 - we self-heal below
+        logger.exception("Alembic upgrade failed; creating tables directly")
+
+    missing = await _missing_tables(settings)
+    if missing:
+        logger.warning("Missing tables detected: %s — creating them", ", ".join(missing))
         await init_db(settings)
+        if not migrated:
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(_stamp_sync)
+        missing = await _missing_tables(settings)
+
+    if missing:
+        logger.error("Schema still incomplete after self-heal: %s", ", ".join(missing))
+    else:
+        logger.info("Schema verified (%d tables)", len(Base.metadata.tables))
 
 
 async def verify_custom_emoji(bot: Bot, settings: Settings) -> None:

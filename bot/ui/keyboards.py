@@ -198,6 +198,22 @@ def specials_collect(count: int, lines: int) -> InlineKeyboardMarkup:
     )
 
 
+def scrape_confirm() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_btn(f"{Emoji.START} Start scraping", "scr:go")],
+            [_btn(f"{Emoji.SETTINGS} Adjust settings", "scr:backpanel")],
+            [_btn(f"{Emoji.CANCEL} Cancel", "scr:cancel")],
+        ]
+    )
+
+
+def scrape_progress() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[_btn("⏹ Stop", "scr:stop")]]
+    )
+
+
 def scrape_recap() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
