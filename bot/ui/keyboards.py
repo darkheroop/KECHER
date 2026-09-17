@@ -26,6 +26,7 @@ def main_menu() -> InlineKeyboardMarkup:
         [_btn(f"{Emoji.SPLIT} Split", "menu:split"), _btn(f"{Emoji.RECYCLE} Dedup", "menu:dedup")],
         [_btn(f"{Emoji.PAGE} Add File", "menu:addfile"), _btn(f"{Emoji.MERGE} Merge", "menu:merge")],
         [_btn(f"{Emoji.FIND} Find BIN", "menu:findbin")],
+        [_btn(f"{Emoji.SPECIALS} SPECIALS", "spec:open")],
         [_btn(f"{Emoji.SETTINGS} Settings", "settings:open")],
     ]
     if contact:
@@ -175,6 +176,26 @@ def accounts_menu(accounts: list[tuple[str, str, bool]]) -> InlineKeyboardMarkup
     rows.append([_btn("➕ Add account", "scr:login")])
     rows.append([_btn(f"{Emoji.BACK} Back", "scr:acctback")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def specials_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_btn(f"{Emoji.CLONE} Clone a channel", "spec:clone")],
+            [_btn(f"{Emoji.FORWARD} Messages → .txt", "spec:txt")],
+            [_btn(f"{Emoji.BACK} Back", "menu:home")],
+        ]
+    )
+
+
+def specials_collect(count: int, lines: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_btn(f"{Emoji.SUCCESS} Done · build .txt ({count})", "spec:done")],
+            [_btn(f"{Emoji.RECYCLE} Dedupe & build", "spec:build:dedup")],
+            [_btn(f"{Emoji.CANCEL} Cancel", "spec:cancel")],
+        ]
+    )
 
 
 def scrape_recap() -> InlineKeyboardMarkup:

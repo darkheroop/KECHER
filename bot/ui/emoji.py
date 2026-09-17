@@ -95,6 +95,11 @@ _SPECS: dict[str, EmojiSpec] = {
     "BUTTON_MODE": EmojiSpec("🕵️"),
     "TEXT_MODE": EmojiSpec("📄"),
     "CARD": EmojiSpec("💠"),
+    # --- specials ---
+    "SPECIALS": EmojiSpec("✨"),
+    "CLONE": EmojiSpec("🧬"),
+    "FORWARD": EmojiSpec("📨"),
+    "MESSAGE": EmojiSpec("💬"),
 }
 
 _custom_ids: dict[str, str] = {}
@@ -213,6 +218,10 @@ class Emoji:
     BUTTON_MODE = _Token("BUTTON_MODE")
     TEXT_MODE = _Token("TEXT_MODE")
     CARD = _Token("CARD")
+    SPECIALS = _Token("SPECIALS")
+    CLONE = _Token("CLONE")
+    FORWARD = _Token("FORWARD")
+    MESSAGE = _Token("MESSAGE")
 
 
 def _spec_names() -> list[str]:  # pragma: no cover - introspection helper

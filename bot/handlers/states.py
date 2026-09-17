@@ -27,3 +27,4 @@ class Flow(StatesGroup):
     awaiting_forward_channel = State()
     awaiting_scrape_channel = State()
     awaiting_broadcast = State()
+    collecting_specials = State()
