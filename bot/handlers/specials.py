@@ -24,11 +24,25 @@ from bot.db.repositories import create_file, get_user_settings
 from bot.handlers.cards import _tag
 from bot.handlers.common import ensure_user
 from bot.handlers.states import Flow
-from bot.security.access import is_admin
+from bot.services import prefs
 from bot.services.cards import dedup_cards
+from bot.services.engine import format_duration
 from bot.services.file_manager import FileManager
+from bot.services.scraper import ScrapeOptions
+from bot.services.telegram_client import friendly_error
 from bot.ui.emoji import Emoji
-from bot.ui.keyboards import back_to_menu, card_actions, specials_collect, specials_menu
+from bot.ui.keyboards import (
+    account_help,
+    back_to_menu,
+    card_actions,
+    clone_confirm,
+    clone_method,
+    clone_options,
+    clone_picker,
+    clone_progress,
+    specials_collect,
+    specials_menu,
+)
 from bot.ui.render import safe_edit
 
 router = Router(name="specials")
@@ -79,10 +93,140 @@ def _progress_text(count: int, lines: int, skipped: int, dedupe: bool = False) -
     )
 
 
-async def _is_admin_user(tg_user, settings: Settings) -> bool:  # noqa: ANN001
-    async with session_scope() as session:
-        user = await ensure_user(session, tg_user)
-        return is_admin(user, settings)
+def _dialog_title(dialogs, entry_id) -> str:  # noqa: ANN001
+    for row in dialogs:
+        if int(row[0]) == int(entry_id):
+            return str(row[1])
+    return str(entry_id)
+
+
+async def _account_label(scraper, owner: int):  # noqa: ANN001
+    return (await scraper.acting_label(owner)) or (await scraper.active_label(owner))
+
+
+def _date_from(value: str, now: datetime) -> datetime | None:
+    return {
+        "7": now - timedelta(days=7),
+        "30": now - timedelta(days=30),
+        "90": now - timedelta(days=90),
+    }.get(value)
+
+
+async def _show_clone_picker(
+    callback: CallbackQuery, state: FSMContext, prefix: str, page: int
+) -> None:
+    data = await state.get_data()
+    dialogs = [tuple(row) for row in (data.get("clone_dialogs") or [])]
+    if prefix == "dst":
+        src = data.get("clone_src") or [None]
+        dialogs = [row for row in dialogs if int(row[0]) != int(src[0])]
+        header = f"{Emoji.CLONE} <b>Clone · destination</b>"
+        hint = "Where should the messages go?   🟢 = you can post there"
+    else:
+        header = f"{Emoji.CLONE} <b>Clone · source</b>"
+        hint = "Which chat should be copied?   🟢 = you can also post there"
+    await safe_edit(
+        callback.message,
+        f"{header}\n{DIVIDER}\n{hint}",
+        reply_markup=clone_picker(dialogs, page=page, prefix=prefix),
+    )
+
+
+async def _stash_job(state: FSMContext, tg_user) -> dict:  # noqa: ANN001
+    data = await state.get_data()
+    opts = data.get("clone_opts") or {}
+    src = data.get("clone_src") or [None, "source"]
+    dst = data.get("clone_dst") or [None, "destination"]
+    saved = await prefs.load_prefs(tg_user.id)
+    use_keywords = bool(opts.get("use_keywords", True))
+    keywords = [w for w in (saved.get("keywords") or []) if w] if use_keywords else []
+    dates = opts.get("dates", "none")
+    limit = int(opts.get("limit", 1000))
+    options = ScrapeOptions(
+        limit=limit or 1_000_000,
+        keywords=keywords,
+        keyword_mode=saved.get("keyword_mode", "contains"),
+        include_media=True,
+        text_only=False,
+        date_from=_date_from(dates, datetime.now(UTC)),
+    )
+    job = {
+        "src_ref": str(src[0]),
+        "dest_ref": str(dst[0]),
+        "src_title": src[1],
+        "dest_title": dst[1],
+        "limit": limit,
+        "copy": opts.get("method") == "copy",
+        "options": options,
+        "keywords": keywords,
+        "dates": dates,
+        "method": opts.get("method", "forward"),
+    }
+    await state.update_data(clone_job=job, clone_stop=False)
+    return job
+
+
+def _clone_confirm_text(job: dict) -> str:
+    method = "📋 Copy (no attribution)" if job.get("copy") else "➡️ Forward (keeps source)"
+    limit = f"{job['limit']:,}" if job.get("limit") else "All"
+    filters = ", ".join(job.get("keywords") or []) or "none"
+    return (
+        f"{Emoji.CLONE} <b>Confirm clone</b>\n{DIVIDER}\n"
+        f"{Emoji.INBOX} From · <b>{html.escape(str(job['src_title']))}</b>\n"
+        f"{Emoji.INBOX} To · <b>{html.escape(str(job['dest_title']))}</b>\n"
+        f"🎚 Method · <b>{method}</b>\n"
+        f"{Emoji.FIND} Keywords · <b>{html.escape(filters)}</b>\n"
+        f"{Emoji.CALENDAR} Dates · <b>{job.get('dates', 'none')}</b>   Limit · <b>{limit}</b>\n\n"
+        "<i>You can stop the clone at any time.</i>"
+    )
+
+
+def _clone_run_text(job: dict, copied: int, elapsed: float, eta: float | None) -> str:
+    limit = int(job.get("limit") or 0)
+    body = f"{Emoji.DOWNLOAD} Copied · <b>{copied:,}</b>"
+    if limit:
+        body += f" / {limit:,}  ({min(100, int(copied * 100 / max(1, limit)))}%)"
+    return (
+        f"{Emoji.CLONE} <b>Cloning</b> · {html.escape(str(job['dest_title']))}\n{DIVIDER}\n"
+        f"{body}\n"
+        f"{Emoji.TIME} Elapsed · <b>{format_duration(elapsed)}</b>\n"
+        f"{Emoji.CLOCK} ETA · <b>{format_duration(eta)}</b>"
+    )
+
+
+async def _clone_stop_requested(state: FSMContext) -> bool:
+    return bool((await state.get_data()).get("clone_stop"))
+
+
+async def _edit_clone_status(
+    bot, chat_id: int, message_id: int, job: dict, copied: int, elapsed: float, eta  # noqa: ANN001
+) -> None:
+    with contextlib.suppress(Exception):
+        await bot.edit_message_text(
+            _clone_run_text(job, copied, elapsed, eta),
+            chat_id=chat_id,
+            message_id=message_id,
+            reply_markup=clone_progress(),
+        )
+
+
+async def _show_clone_options(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    opts = data.get("clone_opts") or {}
+    src = data.get("clone_src") or [None, "source"]
+    dst = data.get("clone_dst") or [None, "destination"]
+    method = "📋 Copy" if opts.get("method") == "copy" else "➡️ Forward"
+    limit = opts.get("limit", 1000)
+    text = (
+        f"{Emoji.CLONE} <b>Clone · options</b>\n{DIVIDER}\n"
+        f"{Emoji.INBOX} <b>{html.escape(str(src[1]))}</b> → "
+        f"<b>{html.escape(str(dst[1]))}</b>\n"
+        f"🎚 {method} · Limit <b>{limit or 'All'}</b>\n"
+        f"{Emoji.FIND} Keywords · "
+        f"<b>{'my saved keywords' if opts.get('use_keywords', True) else 'none'}</b>\n"
+        f"{Emoji.CALENDAR} Dates · <b>{opts.get('dates', 'none')}</b>"
+    )
+    await safe_edit(callback.message, text, reply_markup=clone_options(opts))
 
 
 async def _push_status(message: Message, state: FSMContext, force: bool = False) -> None:
@@ -255,13 +399,249 @@ async def spec_open(callback: CallbackQuery) -> None:
 
 
 @router.callback_query(F.data == "spec:clone")
-async def spec_clone(callback: CallbackQuery, settings: Settings) -> None:
-    if not await _is_admin_user(callback.from_user, settings):
-        await callback.answer("Admins only", show_alert=True)
+async def spec_clone(
+    callback: CallbackQuery, state: FSMContext, scraper, settings: Settings  # noqa: ANN001
+) -> None:
+    tg_user = callback.from_user
+    if not scraper.user_connected(tg_user.id):
+        await callback.answer("Connect an account first (/scrape).", show_alert=True)
         return
+    label = await _account_label(scraper, tg_user.id)
     if callback.message is not None:
-        await safe_edit(callback.message, CLONE_TEXT, reply_markup=back_to_menu())
+        await safe_edit(callback.message, f"{Emoji.CLONE} Loading your chats…")
+    try:
+        dialogs = await scraper.list_dialogs(label, limit=settings.clone_max_dialogs)
+    except Exception as exc:  # noqa: BLE001
+        if callback.message is not None:
+            await safe_edit(
+                callback.message,
+                f"{Emoji.ERROR} {html.escape(friendly_error(exc))}",
+                reply_markup=back_to_menu(),
+            )
+        await callback.answer()
+        return
+    if not dialogs:
+        if callback.message is not None:
+            await safe_edit(
+                callback.message,
+                f"{Emoji.INFO} No groups or channels found for this account.",
+                reply_markup=back_to_menu(),
+            )
+        await callback.answer()
+        return
+    await state.update_data(
+        clone_dialogs=[[int(d["id"]), str(d["title"]), bool(d["can_post"])] for d in dialogs],
+        clone_src=None,
+        clone_dst=None,
+        clone_job=None,
+        clone_stop=False,
+        clone_opts={"limit": 1000, "use_keywords": True, "dates": "none", "method": "forward"},
+    )
+    await _show_clone_picker(callback, state, "src", 0)
     await callback.answer()
+
+
+@router.message(Command("clone"))
+async def cmd_clone(
+    message: Message, state: FSMContext, scraper, settings: Settings  # noqa: ANN001
+) -> None:
+    tg_user = message.from_user
+    assert tg_user is not None
+    if not scraper.user_connected(tg_user.id):
+        await message.answer(
+            f"{Emoji.LOGIN} Connect an account first, then try again.",
+            reply_markup=account_help(),
+        )
+        return
+    parts = (message.text or "").split(maxsplit=3)
+    if len(parts) < 3:
+        await message.answer(CLONE_TEXT, reply_markup=specials_menu())
+        return
+    limit = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 200
+    job = {
+        "src_ref": parts[1],
+        "dest_ref": parts[2],
+        "src_title": parts[1],
+        "dest_title": parts[2],
+        "limit": max(1, min(limit, 5000)),
+        "copy": False,
+        "options": None,
+        "keywords": [],
+        "dates": "none",
+        "method": "forward",
+    }
+    await state.update_data(clone_job=job, clone_stop=False)
+    await message.answer(_clone_confirm_text(job), reply_markup=clone_confirm())
+
+
+@router.callback_query(F.data == "clone:noop")
+async def clone_noop(callback: CallbackQuery) -> None:
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("clone:page:"))
+async def clone_page(callback: CallbackQuery, state: FSMContext) -> None:
+    parts = (callback.data or "").split(":")
+    if len(parts) != 4 or not parts[3].lstrip("-").isdigit():
+        await callback.answer()
+        return
+    await _show_clone_picker(callback, state, parts[2], int(parts[3]))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("clone:pick:src:"))
+async def clone_pick_src(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    dialogs = data.get("clone_dialogs") or []
+    entry_id = int((callback.data or "").rsplit(":", 1)[-1])
+    await state.update_data(clone_src=[entry_id, _dialog_title(dialogs, entry_id)])
+    await _show_clone_picker(callback, state, "dst", 0)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("clone:pick:dst:"))
+async def clone_pick_dst(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    dialogs = data.get("clone_dialogs") or []
+    entry_id = int((callback.data or "").rsplit(":", 1)[-1])
+    src = data.get("clone_src") or [None, "source"]
+    await state.update_data(clone_dst=[entry_id, _dialog_title(dialogs, entry_id)])
+    if callback.message is not None:
+        await safe_edit(
+            callback.message,
+            f"{Emoji.CLONE} <b>Clone · method</b>\n{DIVIDER}\n"
+            f"{Emoji.INBOX} <b>{html.escape(str(src[1]))}</b> → "
+            f"<b>{html.escape(_dialog_title(dialogs, entry_id))}</b>\n\n"
+            "How should the messages be sent?",
+            reply_markup=clone_method(),
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("clone:method:"))
+async def clone_set_method(callback: CallbackQuery, state: FSMContext) -> None:
+    method = (callback.data or "").rsplit(":", 1)[-1]
+    data = await state.get_data()
+    opts = dict(data.get("clone_opts") or {})
+    opts["method"] = method if method in {"forward", "copy"} else "forward"
+    opts.setdefault("limit", 1000)
+    opts.setdefault("use_keywords", True)
+    opts.setdefault("dates", "none")
+    await state.update_data(clone_opts=opts, clone_job=None)
+    await _show_clone_options(callback, state)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("clone:opt:"))
+async def clone_set_option(callback: CallbackQuery, state: FSMContext) -> None:
+    parts = (callback.data or "").split(":")
+    data = await state.get_data()
+    opts = dict(data.get("clone_opts") or {})
+    opts.setdefault("limit", 1000)
+    opts.setdefault("use_keywords", True)
+    opts.setdefault("dates", "none")
+    opts.setdefault("method", "forward")
+    if len(parts) >= 4 and parts[2] == "limit" and parts[3].isdigit():
+        opts["limit"] = int(parts[3])
+    elif len(parts) >= 4 and parts[2] == "dates":
+        opts["dates"] = parts[3]
+    elif len(parts) >= 3 and parts[2] == "kw":
+        opts["use_keywords"] = not opts.get("use_keywords", True)
+    await state.update_data(clone_opts=opts, clone_job=None)
+    await _show_clone_options(callback, state)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "clone:stop")
+async def clone_stop(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.update_data(clone_stop=True)
+    await callback.answer("Stopping after this batch…")
+
+
+@router.callback_query(F.data == "clone:no")
+async def clone_cancel(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await safe_edit(
+        callback.message,
+        f"{Emoji.CANCEL} Clone cancelled.",
+        reply_markup=specials_menu(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "clone:go")
+async def clone_go(
+    callback: CallbackQuery, state: FSMContext, scraper, settings: Settings  # noqa: ANN001
+) -> None:
+    tg_user = callback.from_user
+    data = await state.get_data()
+    if data.get("clone_src") and data.get("clone_dst"):
+        job = await _stash_job(state, tg_user)
+    else:
+        job = data.get("clone_job")
+    if not job:
+        await callback.answer("Pick a source and destination first.", show_alert=True)
+        return
+
+    label = await _account_label(scraper, tg_user.id)
+    if label is None:
+        await callback.answer("No connected account.", show_alert=True)
+        return
+    if callback.message is None:
+        await callback.answer()
+        return
+
+    await state.update_data(clone_stop=False)
+    status = await callback.message.answer(
+        _clone_run_text(job, 0, 0.0, None), reply_markup=clone_progress()
+    )
+    await callback.answer()
+
+    started = time.monotonic()
+    throttle = {"t": 0.0}
+
+    def on_progress(done: int) -> None:
+        now = time.monotonic()
+        if now - throttle["t"] < 1.5:
+            return
+        throttle["t"] = now
+        elapsed = now - started
+        limit = int(job.get("limit") or 0)
+        eta = max(0.0, elapsed * (limit - done) / done) if limit and done else None
+        asyncio.create_task(
+            _edit_clone_status(
+                callback.bot, callback.message.chat.id, status.message_id, job, done, elapsed, eta
+            )
+        )
+
+    try:
+        copied = await scraper.clone(
+            label=label,
+            src_ref=job["src_ref"],
+            dest_ref=job["dest_ref"],
+            limit=int(job.get("limit") or 0),
+            copy=bool(job.get("copy")),
+            options=job.get("options"),
+            on_progress=on_progress,
+            should_stop=lambda: _clone_stop_requested(state),
+        )
+    except Exception as exc:  # noqa: BLE001
+        await safe_edit(
+            status,
+            f"{Emoji.ERROR} {html.escape(friendly_error(exc))}",
+            reply_markup=back_to_menu(),
+        )
+        return
+
+    await safe_edit(
+        status,
+        f"{Emoji.SUCCESS} <b>Clone complete</b>\n{DIVIDER}\n"
+        f"{Emoji.INBOX} To · <b>{html.escape(str(job['dest_title']))}</b>\n"
+        f"{Emoji.DOWNLOAD} Copied · <b>{copied:,}</b> message(s)\n"
+        f"{Emoji.TIME} Time · <b>{format_duration(time.monotonic() - started)}</b>",
+        reply_markup=back_to_menu(),
+    )
+    await state.clear()
 
 
 @router.callback_query(F.data == "spec:txt")

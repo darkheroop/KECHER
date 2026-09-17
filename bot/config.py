@@ -86,6 +86,10 @@ class Settings(BaseSettings):
     scrape_channel_id: str = ""
     # Max sources processed in a single scrape run (pacing between them).
     scrape_max_sources: int = 4
+    # Parallel fetch workers per source (date windows / keyword searches).
+    scrape_workers: int = 3
+    # Max dialogs listed in the clone source/destination pickers.
+    clone_max_dialogs: int = 200
 
     # Shown in the welcome message / contact button.
     developer_contact: str = "Lord_Jat"

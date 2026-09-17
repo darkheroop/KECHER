@@ -17,18 +17,35 @@ from pathlib import Path
 from bot.config import Settings
 from bot.db.engine import session_scope
 from bot.db.repositories import get_bot_setting, set_bot_setting
+from bot.services.engine import (
+    WORKERS,
+    OutputSink,
+    ScanNotifier,
+    ScanState,
+    plan_windows,
+)
 from bot.services.scraper import (
     AccountRegistry,
     MessageDatum,
     ScrapeOptions,
     ScrapeResult,
     is_scraper_available,
-    scrape_to_file,
+    message_matches,
 )
 
 logger = logging.getLogger(__name__)
 
 ProgressFn = Callable[[int], None]
+
+
+async def _stop_requested(should_stop) -> bool:  # noqa: ANN001
+    """Evaluate a stop predicate that may be sync or async."""
+    if should_stop is None:
+        return False
+    result = should_stop()
+    if hasattr(result, "__await__"):
+        result = await result
+    return bool(result)
 
 
 class ScraperUnavailable(RuntimeError):
@@ -323,6 +340,11 @@ class TelethonScraper:
             str(self._session_path(label)),
             self._settings.telegram_api_id,
             self._settings.telegram_api_hash.get_secret_value(),
+            # Ride out Telegram's throttling instead of dying mid-run.
+            flood_sleep_threshold=600,
+            connection_retries=5,
+            request_retries=5,
+            retry_delay=2,
         )
 
     async def _find_dialog_entity(self, client, peer_ref: str):  # noqa: ANN001, ANN201
@@ -378,24 +400,164 @@ class TelethonScraper:
         options: ScrapeOptions,
         fmt: str,
         on_progress: ProgressFn | None = None,
+        on_scan=None,  # noqa: ANN001 - ScanProgress -> None (sync or async)
+        should_stop=None,  # noqa: ANN001 - () -> bool (sync or async)
+        workers: int = WORKERS,
     ) -> ScrapeResult:
-        client = await self._make_client(label)
-        async with client:
-            entity, _ = await self._find_dialog_entity(client, peer_ref)
-            if entity is None:
-                raise SourceAccessDenied(
-                    "The authenticated account can't access this source. It must be "
-                    "your own, or one you're a member of (invite links aren't supported)."
-                )
+        """Read authorised history into ``out`` using the fast engine.
 
-            collected: list[MessageDatum] = []
-            async for message in client.iter_messages(entity, limit=options.limit):
-                collected.append(to_datum(message))
+        * keywords are pushed to Telegram's **server-side search** (big win);
+        * plain history scans run in parallel **date windows**;
+        * output is streamed to disk (flat memory) and de-duplicated by id;
+        * ``should_stop`` aborts mid-source, keeping whatever matched so far;
+        * if a server search finds nothing we fall back to a local full scan.
+        """
+        client = await self._make_client(label)
+        sink = OutputSink(out, options=options, fmt=fmt)
+        state = ScanState(options.date_from, options.date_to)
+        notifier = ScanNotifier(on_scan)
+        try:
+            async with client:
+                entity, _ = await self._find_dialog_entity(client, peer_ref)
+                if entity is None:
+                    raise SourceAccessDenied(
+                        "The authenticated account can't access this source. It must be "
+                        "your own, or one you're a member of (invite links aren't supported)."
+                    )
+
+                keywords = options.all_keywords()
+                searchable = bool(keywords) and options.keyword_mode != "regex"
+                if searchable:
+                    await self._scan_search(
+                        client, entity, sink, options, keywords, state, notifier,
+                        should_stop, workers,
+                    )
+                if sink.exported == 0:
+                    # No keyword search (or it found nothing): walk history instead.
+                    await self._scan_history(
+                        client, entity, sink, options, state, notifier, should_stop, workers
+                    )
+        finally:
+            sink.close()
 
         await self._store_blob(label)
-        return await asyncio.to_thread(
-            scrape_to_file, collected, out, options=options, fmt=fmt, on_progress=on_progress
+        await notifier.tick(state, sink, force=True)
+        if on_progress:
+            on_progress(sink.scanned)
+        return sink.result
+
+    async def _scan_search(
+        self, client, entity, sink, options, keywords, state, notifier, should_stop, workers  # noqa: ANN001
+    ) -> None:
+        windows = plan_windows(
+            options.date_from, options.date_to, 1 if options.limit else max(1, workers)
         )
+        semaphore = asyncio.Semaphore(max(1, workers))
+        limit = options.limit or 0
+
+        async def task(term: str, lo, hi) -> None:  # noqa: ANN001
+            async with semaphore:
+                try:
+                    async for message in client.iter_messages(
+                        entity, search=term, offset_date=hi, wait_time=0
+                    ):
+                        if limit and sink.exported >= limit:
+                            return
+                        if lo is not None and message.date < lo:
+                            break
+                        if state.scanned % 50 == 0 and await _stop_requested(should_stop):
+                            return
+                        state.bump(message.date)
+                        sink.consider(to_datum(message))
+                        await notifier.tick(state, sink)
+                except Exception as exc:  # noqa: BLE001 - one worker must not kill the run
+                    logger.warning("Search worker failed (%s)", friendly_error(exc))
+
+        await asyncio.gather(
+            *(task(term, lo, hi) for term in keywords for lo, hi in windows)
+        )
+
+    async def _scan_history(
+        self, client, entity, sink, options, state, notifier, should_stop, workers  # noqa: ANN001
+    ) -> None:
+        windows = plan_windows(
+            options.date_from, options.date_to, 1 if options.limit else max(1, workers)
+        )
+        semaphore = asyncio.Semaphore(max(1, workers))
+        limit = options.limit or 0
+
+        async def task(lo, hi) -> None:  # noqa: ANN001
+            async with semaphore:
+                try:
+                    async for message in client.iter_messages(
+                        entity, limit=(limit or None), offset_date=hi, wait_time=0
+                    ):
+                        if limit and sink.exported >= limit:
+                            return
+                        if lo is not None and message.date < lo:
+                            break
+                        if state.scanned % 50 == 0 and await _stop_requested(should_stop):
+                            return
+                        state.bump(message.date)
+                        sink.consider(to_datum(message))
+                        await notifier.tick(state, sink)
+                except Exception as exc:  # noqa: BLE001 - one worker must not kill the run
+                    logger.warning("History worker failed (%s)", friendly_error(exc))
+
+        await asyncio.gather(*(task(lo, hi) for lo, hi in windows))
+
+    # -- dialogs ------------------------------------------------------------ #
+    @staticmethod
+    def _can_post(entity, is_channel: bool) -> bool:  # noqa: ANN001
+        if getattr(entity, "creator", False):
+            return True
+        rights = getattr(entity, "admin_rights", None)
+        if rights is not None and (
+            getattr(rights, "post_messages", False) or getattr(rights, "send_messages", False)
+        ):
+            return True
+        banned = getattr(entity, "default_banned_rights", None)
+        if banned is not None and getattr(banned, "send_messages", False):
+            return False
+        return not is_channel
+
+    async def list_dialogs(self, label: str, *, limit: int = 200) -> list[dict]:
+        """Return the account's channels/groups so the user can pick one."""
+        client = await self._make_client(label)
+        found: list[dict] = []
+        try:
+            async with client:
+                async for dialog in client.iter_dialogs(limit=limit):
+                    if getattr(dialog, "is_user", False):
+                        continue
+                    entity = dialog.entity
+                    if entity is None:
+                        continue
+                    is_channel = bool(getattr(dialog, "is_channel", False))
+                    found.append(
+                        {
+                            "id": int(dialog.id),
+                            "title": dialog.name or str(dialog.id),
+                            "channel": is_channel,
+                            "can_post": self._can_post(entity, is_channel),
+                        }
+                    )
+        finally:
+            await self._store_blob(label)
+        return found
+
+    async def _flush_batch(self, client, dest, batch, source, copy: bool) -> None:  # noqa: ANN001
+        try:
+            await client.forward_messages(dest, batch, source, drop_author=copy)
+        except Exception as exc:  # noqa: BLE001
+            name = type(exc).__name__
+            if "FloodWait" in name:
+                wait = int(getattr(exc, "seconds", 30)) + 2
+                logger.warning("FloodWait: sleeping %ss during clone", wait)
+                await asyncio.sleep(wait)
+                await client.forward_messages(dest, batch, source, drop_author=copy)
+                return
+            raise
 
     async def clone(
         self,
@@ -404,13 +566,16 @@ class TelethonScraper:
         src_ref: str,
         dest_ref: str,
         limit: int = 1000,
-        delay: float = 1.0,
+        copy: bool = False,
+        options: ScrapeOptions | None = None,
         on_progress: ProgressFn | None = None,
+        should_stop=None,  # noqa: ANN001
     ) -> int:
         """Copy messages from a source chat into a destination channel.
 
-        Uses the account's own membership; nothing is bypassed. Returns the
-        number of messages copied.
+        ``copy=True`` drops the original attribution (a copy rather than a
+        forward). Filters (keyword/date) reuse the scrape options. Uses the
+        account's own membership; nothing is bypassed.
         """
         client = await self._make_client(label)
         copied = 0
@@ -424,17 +589,35 @@ class TelethonScraper:
                 if destination is None:
                     raise SourceAccessDenied(f"Destination not accessible: {dest_ref}")
 
-                async for message in client.iter_messages(source, limit=limit or None):
+                search = None
+                if options is not None:
+                    keywords = options.all_keywords()
+                    if keywords and options.keyword_mode != "regex":
+                        search = keywords[0]
+
+                async for message in client.iter_messages(
+                    source,
+                    limit=limit or None,
+                    offset_date=(options.date_to if options else None),
+                    search=search,
+                    wait_time=0,
+                ):
+                    if options is not None and options.date_from and message.date < options.date_from:
+                        break
+                    if options is not None and not message_matches(to_datum(message), options):
+                        continue
                     batch.append(message)
-                    if len(batch) >= 50:
-                        await client.forward_messages(destination, batch, source)
+                    if len(batch) >= 100:
+                        await self._flush_batch(client, destination, batch, source, copy)
                         copied += len(batch)
                         batch = []
                         if on_progress:
                             on_progress(copied)
-                        await asyncio.sleep(max(0.5, delay))
+                        if await _stop_requested(should_stop):
+                            break
+                        await asyncio.sleep(0.4)
                 if batch:
-                    await client.forward_messages(destination, batch, source)
+                    await self._flush_batch(client, destination, batch, source, copy)
                     copied += len(batch)
                     if on_progress:
                         on_progress(copied)

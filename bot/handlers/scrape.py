@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, FSInputFile, Message
+from aiogram.types import CallbackQuery, FSInputFile, InlineKeyboardMarkup, Message
 
 from bot.config import Settings
 from bot.db.engine import session_scope
@@ -34,6 +34,7 @@ from bot.jobs.progress import ProgressReporter, TelegramNotifier
 from bot.security.access import is_admin
 from bot.services import prefs
 from bot.services.cards import clean_cards, merge_files
+from bot.services.engine import format_duration
 from bot.services.file_manager import FileManager
 from bot.services.scraper import ScrapeOptions, is_scraper_available
 from bot.services.telegram_client import friendly_error
@@ -58,6 +59,7 @@ from bot.ui.render import safe_edit
 router = Router(name="scrape")
 
 DIVIDER = "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄"
+EMPTY_MARKUP = InlineKeyboardMarkup(inline_keyboard=[])
 
 HELP_INTRO = (
     f"{Emoji.SCRAPE} <b>Scrape</b>\n{DIVIDER}\n"
@@ -90,16 +92,42 @@ DEFAULT_STATE = {
 }
 
 
-async def _animate(reporter: ProgressReporter, stop: asyncio.Event, label: str) -> None:
-    """Indeterminate loading bar while a blocking network step runs."""
-    percent = 5
-    while not stop.is_set():
-        await reporter.update(percent, label=label, force=True)
-        percent = min(95, percent + 6)
-        try:
-            await asyncio.wait_for(stop.wait(), timeout=1.2)
-        except asyncio.TimeoutError:
-            continue
+async def _stop_now(state: FSMContext) -> bool:
+    return bool((await state.get_data()).get("sc_stop"))
+
+
+class _LiveCard:
+    """Edits one Telegram message with live scan counters and an ETA."""
+
+    def __init__(self, bot, chat_id: int, message_id: int, *, header: str) -> None:  # noqa: ANN001
+        self._bot = bot
+        self._chat_id = chat_id
+        self._message_id = message_id
+        self._header = header
+        self._started = time.monotonic()
+        self._last = float("-inf")
+
+    async def on_scan(self, progress) -> None:  # noqa: ANN001 - ScanProgress
+        now = time.monotonic()
+        if now - self._last < 1.2:
+            return
+        self._last = now
+        elapsed = now - self._started
+        eta = progress.eta_seconds(elapsed)
+        text = (
+            f"{self._header}\n{DIVIDER}\n"
+            f"{Emoji.DOWNLOAD} Scanned · <b>{progress.scanned:,}</b>\n"
+            f"{Emoji.FIND} Matched · <b>{progress.matched:,}</b>\n"
+            f"{Emoji.TIME} Elapsed · <b>{format_duration(elapsed)}</b>\n"
+            f"{Emoji.CLOCK} ETA · <b>{format_duration(eta)}</b>"
+        )
+        with contextlib.suppress(Exception):
+            await self._bot.edit_message_text(
+                text,
+                chat_id=self._chat_id,
+                message_id=self._message_id,
+                reply_markup=scrape_progress(),
+            )
 
 
 def _api_ready(scraper, settings: Settings) -> bool:  # noqa: ANN001
@@ -1069,14 +1097,15 @@ async def _execute_scrape(
             f"{fmt.upper()}</i>",
             reply_markup=scrape_progress(),
         )
-        reporter = ProgressReporter(
-            TelegramNotifier(callback.bot),
+        card = _LiveCard(
+            callback.bot,
             callback.message.chat.id,
             status.message_id,
-            min_interval=1.2,
+            header=(
+                f"{Emoji.SCRAPE} <b>Source {index}/{len(sources)}</b> · "
+                f"{html.escape(title)}"
+            ),
         )
-        stop = asyncio.Event()
-        animation = asyncio.create_task(_animate(reporter, stop, f"Scraping {title}"))
         try:
             result = await scraper.scrape(
                 label=label,
@@ -1084,14 +1113,17 @@ async def _execute_scrape(
                 out=raw.path,
                 options=options,
                 fmt=fmt,
+                on_scan=card.on_scan,
+                should_stop=lambda: _stop_now(state),
+                workers=max(1, settings.scrape_workers),
             )
         except Exception as exc:  # noqa: BLE001
-            stop.set()
-            await animation
-            await safe_edit(status, f"{Emoji.ERROR} {html.escape(title)}: {html.escape(friendly_error(exc))}")
+            await safe_edit(
+                status,
+                f"{Emoji.ERROR} {html.escape(title)}: {html.escape(friendly_error(exc))}",
+                reply_markup=EMPTY_MARKUP,
+            )
             continue
-        stop.set()
-        await animation
 
         if dry_run:
             await safe_edit(
@@ -1099,6 +1131,7 @@ async def _execute_scrape(
                 f"{Emoji.INFO} <b>Dry-run</b> · {html.escape(title)}\n"
                 f"Scanned {result.scanned:,} · matched {result.exported:,}\n"
                 f"<i>Nothing was saved.</i>",
+                reply_markup=EMPTY_MARKUP,
             )
             with contextlib.suppress(Exception):
                 raw.path.unlink()
@@ -1121,6 +1154,7 @@ async def _execute_scrape(
                 f"{Emoji.INFO} <b>{html.escape(title)}</b>\n"
                 f"Scanned {result.scanned:,} · <b>0 matches</b> for the current "
                 "keywords/filters.\n<i>Nothing to send.</i>",
+                reply_markup=EMPTY_MARKUP,
             )
             for stale in (raw.path, cleaned_alloc.path):
                 with contextlib.suppress(Exception):
@@ -1135,6 +1169,7 @@ async def _execute_scrape(
             f"🧹 <b>Valid records</b>  ·  {report.valid:,}\n"
             f"⛔ <b>Removed</b>  ·  {report.invalid:,}\n"
             f"💾 <b>Size</b>  ·  {cleaned.size_bytes:,} bytes",
+            reply_markup=EMPTY_MARKUP,
         )
         async with session_scope() as session:
             for stored in (raw_stored, cleaned):
@@ -1370,128 +1405,3 @@ async def cmd_history(message: Message) -> None:
             f"   {html.escape(srcs)}"
         )
     await message.answer("\n".join(lines))
-
-
-# --------------------------------------------------------------------------- #
-# Clone a source chat into your own channel (admin only)
-# --------------------------------------------------------------------------- #
-async def _is_admin_user(tg_user, settings):  # noqa: ANN001
-    async with session_scope() as session:
-        user = await ensure_user(session, tg_user)
-        return is_admin(user, settings)
-
-
-@router.message(Command("clone"))
-async def cmd_clone(
-    message: Message,
-    state: FSMContext,
-    scraper,  # noqa: ANN001
-    settings: Settings,
-) -> None:
-    tg_user = message.from_user
-    assert tg_user is not None
-    if not await _is_admin_user(tg_user, settings):
-        await message.answer(f"{Emoji.DENIED} Admins only.")
-        return
-
-    parts = (message.text or "").split(maxsplit=3)
-    if len(parts) < 3:
-        await message.answer(
-            f"{Emoji.MERGE} <b>Clone a source</b>\n{DIVIDER}\n"
-            "Copies messages from a chat you can access into a channel you own.\n\n"
-            "Usage:\n<code>/clone &lt;source&gt; &lt;destination&gt; [limit]</code>\n\n"
-            "Example:\n<code>/clone @source @mychannel 500</code>\n"
-            "<code>/clone -1001234567890 @mychannel</code>\n\n"
-            "• source/destination: <code>@username</code> or <code>-100…</code>\n"
-            "• limit: how many recent messages (default 200)\n\n"
-            f"{Emoji.SECURITY} Only sources your account can access are used. "
-            "Nothing is bypassed.",
-        )
-        return
-
-    limit = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 200
-    await state.update_data(
-        clone={"src": parts[1], "dest": parts[2], "limit": max(1, min(limit, 5000))}
-    )
-    await message.answer(
-        f"{Emoji.MERGE} <b>Confirm clone</b>\n{DIVIDER}\n"
-        f"From: <code>{html.escape(parts[1])}</code>\n"
-        f"To: <code>{html.escape(parts[2])}</code>\n"
-        f"Limit: <b>{limit}</b> recent message(s)\n\n"
-        "Messages will be forwarded (attribution preserved). Continue?",
-        reply_markup=clone_confirm(),
-    )
-
-
-@router.callback_query(F.data == "clone:no")
-async def clone_cancel(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.clear()
-    await safe_edit(callback.message, f"{Emoji.CANCEL} Clone cancelled.")
-    await callback.answer()
-
-
-@router.callback_query(F.data == "clone:go")
-async def clone_go(
-    callback: CallbackQuery,
-    state: FSMContext,
-    scraper,  # noqa: ANN001
-    settings: Settings,
-) -> None:
-    tg_user = callback.from_user
-    if not await _is_admin_user(tg_user, settings):
-        await callback.answer("Admins only", show_alert=True)
-        return
-    data = await state.get_data()
-    config = data.get("clone")
-    await state.clear()
-    if not config:
-        await callback.answer("Nothing to clone", show_alert=True)
-        return
-    if not scraper.user_connected(tg_user.id):
-        await callback.answer("Connect an account first (/scrape).", show_alert=True)
-        return
-
-    label = (await scraper.acting_label(tg_user.id)) or (await scraper.active_label(tg_user.id))
-    if callback.message is None or label is None:
-        await callback.answer("No account", show_alert=True)
-        return
-
-    status = await callback.message.answer(
-        f"{Emoji.MERGE} Cloning {html.escape(config['src'])} → "
-        f"{html.escape(config['dest'])} (max {config['limit']})…"
-    )
-    await callback.answer()
-
-    reporter = ProgressReporter(
-        TelegramNotifier(callback.bot),
-        callback.message.chat.id,
-        status.message_id,
-        min_interval=1.5,
-    )
-    loop = asyncio.get_running_loop()
-    total = max(1, int(config["limit"]))
-
-    def on_progress(done: int) -> None:
-        percent = min(99.0, done * 100.0 / total)
-        asyncio.run_coroutine_threadsafe(
-            reporter.update(percent, label="Cloning"), loop
-        )
-
-    try:
-        copied = await scraper.clone(
-            label=label,
-            src_ref=config["src"],
-            dest_ref=config["dest"],
-            limit=int(config["limit"]),
-            on_progress=on_progress,
-        )
-    except Exception as exc:  # noqa: BLE001
-        await safe_edit(status, f"{Emoji.ERROR} {html.escape(friendly_error(exc))}")
-        return
-
-    await safe_edit(
-        status,
-        f"{Emoji.SUCCESS} <b>Clone complete</b>\n{DIVIDER}\n"
-        f"Copied <b>{copied:,}</b> message(s) into "
-        f"<code>{html.escape(config['dest'])}</code>.",
-    )

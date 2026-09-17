@@ -235,6 +235,70 @@ def clone_confirm() -> InlineKeyboardMarkup:
     )
 
 
+CLONE_PAGE_SIZE = 8
+
+
+def clone_picker(
+    entries: list[tuple[int, str, bool]], *, page: int, prefix: str
+) -> InlineKeyboardMarkup:
+    """Paginated list of the account's groups/channels (chat id, title, can post)."""
+    start = max(0, page) * CLONE_PAGE_SIZE
+    chunk = entries[start : start + CLONE_PAGE_SIZE]
+    rows = [
+        [_btn(f"{'🟢' if ok else '⚪'} {title}"[:60], f"clone:pick:{prefix}:{entry_id}")]
+        for entry_id, title, ok in chunk
+    ]
+    pages = max(1, (len(entries) + CLONE_PAGE_SIZE - 1) // CLONE_PAGE_SIZE)
+    nav = []
+    if page > 0:
+        nav.append(_btn("◀️ Prev", f"clone:page:{prefix}:{page - 1}"))
+    nav.append(_btn(f"{min(page + 1, pages)}/{pages}", "clone:noop"))
+    if page < pages - 1:
+        nav.append(_btn("Next ▶️", f"clone:page:{prefix}:{page + 1}"))
+    rows.append(nav)
+    rows.append([_btn(f"{Emoji.CANCEL} Cancel", "clone:no")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def clone_method() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_btn("➡️ Forward (keeps source)", "clone:method:forward")],
+            [_btn("📋 Copy (no attribution)", "clone:method:copy")],
+            [_btn(f"{Emoji.CANCEL} Cancel", "clone:no")],
+        ]
+    )
+
+
+def clone_options(opts: dict) -> InlineKeyboardMarkup:
+    limit = opts.get("limit", 1000)
+    keywords = opts.get("use_keywords", True)
+    dates = opts.get("dates", "none")
+    rows = [
+        [
+            _btn(_mark("100", limit == 100), "clone:opt:limit:100"),
+            _btn(_mark("500", limit == 500), "clone:opt:limit:500"),
+            _btn(_mark("1k", limit == 1000), "clone:opt:limit:1000"),
+            _btn(_mark("5k", limit == 5000), "clone:opt:limit:5000"),
+        ],
+        [_btn(_mark("All messages", not limit), "clone:opt:limit:0")],
+        [_btn(_mark("Use my keywords", keywords), "clone:opt:kw")],
+        [
+            _btn(_mark("All time", dates == "none"), "clone:opt:dates:none"),
+            _btn(_mark("7d", dates == "7"), "clone:opt:dates:7"),
+            _btn(_mark("30d", dates == "30"), "clone:opt:dates:30"),
+            _btn(_mark("90d", dates == "90"), "clone:opt:dates:90"),
+        ],
+        [_btn(f"{Emoji.START} Start clone", "clone:go")],
+        [_btn(f"{Emoji.CANCEL} Cancel", "clone:no")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def clone_progress() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[_btn("⏹ Stop", "clone:stop")]])
+
+
 def scrape_intro(lang: str = "en") -> InlineKeyboardMarkup:
     from bot.ui.i18n import tr
 
