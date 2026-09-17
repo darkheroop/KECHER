@@ -26,6 +26,14 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
+import {
+  apiGet,
+  inTelegram,
+  type Account as ApiAccount,
+  type HistoryItem as ApiHistoryItem,
+  type Me,
+} from "../lib/api";
+
 type Screen = "home" | "scrape" | "accounts" | "history" | "settings" | "help";
 type Theme = "dark" | "light";
 type Surface = "glossy" | "solid";
@@ -35,6 +43,7 @@ type TelegramWebApp = {
   ready?: () => void;
   expand?: () => void;
   sendData?: (data: string) => void;
+  initData?: string;
   colorScheme?: "light" | "dark";
   HapticFeedback?: {
     impactOccurred?: (style: "light" | "medium" | "heavy") => void;
@@ -93,6 +102,9 @@ export function CardFileBot() {
   const [surface, setSurface] = useState<Surface>("glossy");
   const [toast, setToast] = useState("");
   const [running, setRunning] = useState(false);
+  const [me, setMe] = useState<Me | null>(null);
+  const [accounts, setAccounts] = useState<ApiAccount[]>([]);
+  const [history, setHistory] = useState<ApiHistoryItem[]>([]);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -100,6 +112,17 @@ export function CardFileBot() {
     app?.ready?.();
     app?.expand?.();
     if (app?.colorScheme === "light") setTheme("light");
+    void (async () => {
+      if (!inTelegram()) return;
+      const [meResult, accountResult, historyResult] = await Promise.all([
+        apiGet<Me>("/api/me"),
+        apiGet<{ accounts: ApiAccount[] }>("/api/accounts"),
+        apiGet<{ history: ApiHistoryItem[] }>("/api/history"),
+      ]);
+      if (meResult) setMe(meResult);
+      if (accountResult) setAccounts(accountResult.accounts ?? []);
+      if (historyResult) setHistory(historyResult.history ?? []);
+    })();
   }, []);
 
   useEffect(() => () => {
@@ -139,13 +162,15 @@ export function CardFileBot() {
             open={open}
             theme={theme}
             setTheme={setTheme}
+            status={me?.access ?? "none"}
+            admin={Boolean(me?.admin)}
           />
         ) : (
           <div className="screen-enter">
             <SubHeader title={screen === "scrape" ? "Scrape source" : screen.charAt(0).toUpperCase() + screen.slice(1)} onBack={() => setScreen("home")} />
             {screen === "scrape" && <ScrapeScreen notify={notify} />}
-            {screen === "accounts" && <AccountsScreen notify={notify} />}
-            {screen === "history" && <HistoryScreen />}
+            {screen === "accounts" && <AccountsScreen notify={notify} accounts={accounts} />}
+            {screen === "history" && <HistoryScreen items={history} />}
             {screen === "settings" && <SettingsScreen theme={theme} setTheme={setTheme} surface={surface} setSurface={setSurface} notify={notify} />}
             {screen === "help" && <HelpScreen />}
           </div>
@@ -160,20 +185,21 @@ export function CardFileBot() {
   );
 }
 
-function Home({ selected, onSelect, open, theme, setTheme }: { selected: Action | null; onSelect: (action: Action) => void; open: (screen: Screen) => void; theme: Theme; setTheme: (theme: Theme) => void }) {
+function Home({ selected, onSelect, open, theme, setTheme, status, admin }: { selected: Action | null; onSelect: (action: Action) => void; open: (screen: Screen) => void; theme: Theme; setTheme: (theme: Theme) => void; status: string; admin: boolean }) {
+  const badge = status === "admin" ? "Admin" : status === "active" ? "Connected" : status === "expired" ? "Expired" : "Limited";
   return (
     <>
       <header className="main-header">
         <div className="brand-mark"><FileCheck2 size={21} strokeWidth={2.4} /></div>
         <div className="brand-copy">
           <span>Card File Bot</span>
-          <strong>File desk</strong>
+          <strong>{admin ? "Admin desk" : "File desk"}</strong>
         </div>
         <div className="header-actions">
           <button className="icon-button" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}>
             {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
           </button>
-          <div className="status-pill"><i />Connected</div>
+          <div className="status-pill"><i />{badge}</div>
         </div>
       </header>
 
@@ -274,21 +300,23 @@ function Pills({ values, value, onChange, compact = false }: { values: string[];
   return <div className={`pills ${compact ? "compact" : ""}`}>{values.map((item) => <button key={item} className={value === item ? "active" : ""} onClick={() => { onChange(item); haptic("selection"); }}>{item}</button>)}</div>;
 }
 
-function AccountsScreen({ notify }: { notify: (message: string) => void }) {
-  const [accounts, setAccounts] = useState([
-    { id: 1, name: "@lord_workspace", detail: "Primary · active now", online: true },
-    { id: 2, name: "@archive_node", detail: "Synced 24 min ago", online: true },
-    { id: 3, name: "@research_feed", detail: "Reconnect required", online: false },
-  ]);
-  const add = () => { const next = accounts.length + 1; setAccounts([...accounts, { id: Date.now(), name: `@new_account_${next}`, detail: "Added just now", online: true }]); sendTelegram("add_account"); notify("Demo account added"); };
-  const logout = (id: number) => { setAccounts((items) => items.map((item) => item.id === id ? { ...item, online: false, detail: "Logged out" } : item)); sendTelegram("logout", { accountId: id }); notify("Account logged out"); };
-  return <main className="sub-content"><div className="intro"><span className="eyebrow">Connections</span><p>Manage the sources attached to this bot.</p></div><div className="account-list panel">{accounts.map((account) => <div className="account-row" key={account.id}><div className="avatar">{account.name.slice(1, 3).toUpperCase()}<i className={account.online ? "online" : ""} /></div><div className="account-copy"><strong>{account.name}</strong><span>{account.detail}</span></div>{account.online && <button className="logout-button" onClick={() => logout(account.id)} aria-label={`Log out ${account.name}`}><LogOut size={17} /></button>}</div>)}</div><button className="secondary-action" onClick={add}><UserPlus size={18} />Add account</button></main>;
+function AccountsScreen({ notify, accounts }: { notify: (message: string) => void; accounts: ApiAccount[] }) {
+  const demo: ApiAccount[] = [
+    { label: "@lord_workspace", status: "Connected", owner: null, active: true },
+    { label: "@archive_node", status: "Connected", owner: null, active: false },
+    { label: "@research_feed", status: "Disconnected", owner: null, active: false },
+  ];
+  const list = accounts.length > 0 ? accounts : demo;
+  const add = () => { sendTelegram("add_account"); notify("Open /scrape to add an account"); };
+  const logout = (label: string) => { sendTelegram("logout", { account: label }); notify(`Log out requested: ${label}`); };
+  return <main className="sub-content"><div className="intro"><span className="eyebrow">Connections</span><p>Accounts attached to this bot. Sessions stay logged in until you log out.</p></div><div className="account-list panel">{list.map((account) => { const online = account.status === "Connected"; return <div className="account-row" key={account.label}><div className="avatar">{account.label.replace(/[^a-z0-9]/gi, "").slice(0, 2).toUpperCase()}<i className={online ? "online" : ""} /></div><div className="account-copy"><strong>{account.label}{account.active ? " · active" : ""}</strong><span>{account.status}</span></div>{online && <button className="logout-button" onClick={() => logout(account.label)} aria-label={`Log out ${account.label}`}><LogOut size={17} /></button>}</div>; })}</div><button className="secondary-action" onClick={add}><UserPlus size={18} />Add account</button></main>;
 }
 
-function HistoryScreen() {
+function HistoryScreen({ items }: { items: ApiHistoryItem[] }) {
   const [loading, setLoading] = useState(true);
-  useEffect(() => { const timer = setTimeout(() => setLoading(false), 700); return () => clearTimeout(timer); }, []);
-  return <main className="sub-content"><div className="intro"><span className="eyebrow">Activity</span><p>Your latest processing runs and results.</p></div>{loading ? <div className="skeleton-list">{[1, 2, 3].map((item) => <div className="skeleton-card" key={item}><i /><span /><span /></div>)}</div> : <div className="timeline">{historyItems.map((item) => <article className="timeline-item panel" key={item.title}><i className={`timeline-dot tone-${item.tone}`} /><div className="timeline-top"><div><strong>{item.title}</strong><span>{item.time}</span></div><em className={`status-${item.tone}`}>{item.status}</em></div><div className="metrics"><span><small>Matched</small><strong>{item.matched}</strong></span><span><small>Valid</small><strong>{item.valid}</strong></span></div></article>)}</div>}</main>;
+  useEffect(() => { const timer = setTimeout(() => setLoading(false), 500); return () => clearTimeout(timer); }, []);
+  const real = items.length > 0;
+  return <main className="sub-content"><div className="intro"><span className="eyebrow">Activity</span><p>Your latest processing runs and results.</p></div>{loading ? <div className="skeleton-list">{[1, 2, 3].map((item) => <div className="skeleton-card" key={item}><i /><span /><span /></div>)}</div> : <div className="timeline">{real ? items.map((item) => <article className="timeline-item panel" key={`${item.ts}-${(item.sources || []).join()}`}><i className="timeline-dot tone-violet" /><div className="timeline-top"><div><strong>Scrape · {(item.sources || []).join(", ") || "—"}</strong><span>{item.ts}</span></div><em className="status-mint">Complete</em></div><div className="metrics"><span><small>Matched</small><strong>{item.matched.toLocaleString()}</strong></span><span><small>Valid</small><strong>{item.valid.toLocaleString()}</strong></span></div></article>) : historyItems.map((item) => <article className="timeline-item panel" key={item.title}><i className={`timeline-dot tone-${item.tone}`} /><div className="timeline-top"><div><strong>{item.title}</strong><span>{item.time}</span></div><em className={`status-${item.tone}`}>{item.status}</em></div><div className="metrics"><span><small>Matched</small><strong>{item.matched}</strong></span><span><small>Valid</small><strong>{item.valid}</strong></span></div></article>)}</div>}</main>;
 }
 
 function SettingsScreen({ theme, setTheme, surface, setSurface, notify }: { theme: Theme; setTheme: (value: Theme) => void; surface: Surface; setSurface: (value: Surface) => void; notify: (message: string) => void }) {

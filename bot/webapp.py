@@ -13,7 +13,15 @@ from pathlib import Path
 
 from aiohttp import web
 
-from bot.config import Settings
+from bot.config import Settings, get_settings
+from bot.webapp_api import (
+    api_accounts,
+    api_history,
+    api_me,
+    api_scrape,
+    api_sources,
+    api_stats,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -108,8 +116,9 @@ async def _redirect_slash(request: web.Request) -> web.StreamResponse:
     raise web.HTTPPermanentRedirect(location="/miniapp/")
 
 
-def create_app() -> web.Application:
+def create_app(settings: Settings | None = None) -> web.Application:
     app = web.Application()
+    app["settings"] = settings or get_settings()
     app.router.add_get("/", _app_index)
     app.router.add_get("/miniapp", _redirect_slash)
     app.router.add_get("/miniapp/", _app_index)
@@ -117,6 +126,14 @@ def create_app() -> web.Application:
         app.router.add_static("/miniapp/assets", DIST_DIR / "assets", name="assets")
         app.router.add_static("/assets", DIST_DIR / "assets", name="assets_alt")
     app.router.add_get("/healthz", _healthz)
+
+    # --- JSON API (Telegram initData validated) ---
+    app.router.add_get("/api/me", api_me)
+    app.router.add_get("/api/accounts", api_accounts)
+    app.router.add_get("/api/sources", api_sources)
+    app.router.add_get("/api/history", api_history)
+    app.router.add_get("/api/stats", api_stats)
+    app.router.add_post("/api/scrape", api_scrape)
     return app
 
 
@@ -134,7 +151,7 @@ async def start_webapp(settings: Settings) -> web.AppRunner | None:
     if not settings.public_base_url and not settings.webapp_port and not os.getenv("PORT"):
         return None
     port = settings.webapp_port or int(os.getenv("PORT", "8080"))
-    runner = web.AppRunner(create_app())
+    runner = web.AppRunner(create_app(settings))
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)
     try:
@@ -145,3 +162,4 @@ async def start_webapp(settings: Settings) -> web.AppRunner | None:
         return None
     logger.info("Mini App server listening on :%s", port)
     return runner
+
