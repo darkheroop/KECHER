@@ -35,6 +35,7 @@ from bot.services import prefs
 from bot.services.cards import clean_cards, merge_files
 from bot.services.file_manager import FileManager
 from bot.services.scraper import ScrapeOptions, is_scraper_available
+from bot.services.telegram_client import friendly_error
 from bot.ui.emoji import Emoji
 from bot.ui.i18n import markdown_to_html, tr
 from bot.ui.keyboards import (
@@ -302,7 +303,7 @@ async def on_phone(message: Message, state: FSMContext, scraper) -> None:  # noq
     try:
         await scraper.start_login(owner=message.from_user.id, phone=phone)
     except Exception as exc:  # noqa: BLE001
-        await safe_edit(status, f"{Emoji.ERROR} Could not start login: <code>{type(exc).__name__}</code>")
+        await safe_edit(status, f"{Emoji.ERROR} {html.escape(friendly_error(exc))}")
         return
     await state.set_state(Flow.awaiting_code)
     await safe_edit(
@@ -460,7 +461,7 @@ async def on_source_text(message: Message, state: FSMContext, scraper) -> None: 
     try:
         title = await scraper.verify_source(label, peer)
     except Exception as exc:  # noqa: BLE001
-        await safe_edit(status, f"{Emoji.ERROR} Could not verify: <code>{type(exc).__name__}</code>")
+        await safe_edit(status, f"{Emoji.ERROR} {html.escape(friendly_error(exc))}")
         return
     if not title:
         await safe_edit(
@@ -997,7 +998,7 @@ async def scr_run(
         except Exception as exc:  # noqa: BLE001
             stop.set()
             await animation
-            await safe_edit(status, f"{Emoji.ERROR} {html.escape(title)}: <code>{type(exc).__name__}</code>")
+            await safe_edit(status, f"{Emoji.ERROR} {html.escape(title)}: {html.escape(friendly_error(exc))}")
             continue
         stop.set()
         await animation
@@ -1251,3 +1252,128 @@ async def cmd_history(message: Message) -> None:
             f"   {html.escape(srcs)}"
         )
     await message.answer("\n".join(lines))
+
+
+# --------------------------------------------------------------------------- #
+# Clone a source chat into your own channel (admin only)
+# --------------------------------------------------------------------------- #
+async def _is_admin_user(tg_user, settings):  # noqa: ANN001
+    async with session_scope() as session:
+        user = await ensure_user(session, tg_user)
+        return is_admin(user, settings)
+
+
+@router.message(Command("clone"))
+async def cmd_clone(
+    message: Message,
+    state: FSMContext,
+    scraper,  # noqa: ANN001
+    settings: Settings,
+) -> None:
+    tg_user = message.from_user
+    assert tg_user is not None
+    if not await _is_admin_user(tg_user, settings):
+        await message.answer(f"{Emoji.DENIED} Admins only.")
+        return
+
+    parts = (message.text or "").split(maxsplit=3)
+    if len(parts) < 3:
+        await message.answer(
+            f"{Emoji.MERGE} <b>Clone a source</b>\n{DIVIDER}\n"
+            "Copies messages from a chat you can access into a channel you own.\n\n"
+            "Usage:\n<code>/clone &lt;source&gt; &lt;destination&gt; [limit]</code>\n\n"
+            "Example:\n<code>/clone @source @mychannel 500</code>\n"
+            "<code>/clone -1001234567890 @mychannel</code>\n\n"
+            "• source/destination: <code>@username</code> or <code>-100…</code>\n"
+            "• limit: how many recent messages (default 200)\n\n"
+            f"{Emoji.SECURITY} Only sources your account can access are used. "
+            "Nothing is bypassed.",
+        )
+        return
+
+    limit = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 200
+    await state.update_data(
+        clone={"src": parts[1], "dest": parts[2], "limit": max(1, min(limit, 5000))}
+    )
+    await message.answer(
+        f"{Emoji.MERGE} <b>Confirm clone</b>\n{DIVIDER}\n"
+        f"From: <code>{html.escape(parts[1])}</code>\n"
+        f"To: <code>{html.escape(parts[2])}</code>\n"
+        f"Limit: <b>{limit}</b> recent message(s)\n\n"
+        "Messages will be forwarded (attribution preserved). Continue?",
+        reply_markup=clone_confirm(),
+    )
+
+
+@router.callback_query(F.data == "clone:no")
+async def clone_cancel(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await safe_edit(callback.message, f"{Emoji.CANCEL} Clone cancelled.")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "clone:go")
+async def clone_go(
+    callback: CallbackQuery,
+    state: FSMContext,
+    scraper,  # noqa: ANN001
+    settings: Settings,
+) -> None:
+    tg_user = callback.from_user
+    if not await _is_admin_user(tg_user, settings):
+        await callback.answer("Admins only", show_alert=True)
+        return
+    data = await state.get_data()
+    config = data.get("clone")
+    await state.clear()
+    if not config:
+        await callback.answer("Nothing to clone", show_alert=True)
+        return
+    if not scraper.user_connected(tg_user.id):
+        await callback.answer("Connect an account first (/scrape).", show_alert=True)
+        return
+
+    label = (await scraper.acting_label(tg_user.id)) or (await scraper.active_label(tg_user.id))
+    if callback.message is None or label is None:
+        await callback.answer("No account", show_alert=True)
+        return
+
+    status = await callback.message.answer(
+        f"{Emoji.MERGE} Cloning {html.escape(config['src'])} → "
+        f"{html.escape(config['dest'])} (max {config['limit']})…"
+    )
+    await callback.answer()
+
+    reporter = ProgressReporter(
+        TelegramNotifier(callback.bot),
+        callback.message.chat.id,
+        status.message_id,
+        min_interval=1.5,
+    )
+    loop = asyncio.get_running_loop()
+    total = max(1, int(config["limit"]))
+
+    def on_progress(done: int) -> None:
+        percent = min(99.0, done * 100.0 / total)
+        asyncio.run_coroutine_threadsafe(
+            reporter.update(percent, label="Cloning"), loop
+        )
+
+    try:
+        copied = await scraper.clone(
+            label=label,
+            src_ref=config["src"],
+            dest_ref=config["dest"],
+            limit=int(config["limit"]),
+            on_progress=on_progress,
+        )
+    except Exception as exc:  # noqa: BLE001
+        await safe_edit(status, f"{Emoji.ERROR} {html.escape(friendly_error(exc))}")
+        return
+
+    await safe_edit(
+        status,
+        f"{Emoji.SUCCESS} <b>Clone complete</b>\n{DIVIDER}\n"
+        f"Copied <b>{copied:,}</b> message(s) into "
+        f"<code>{html.escape(config['dest'])}</code>.",
+    )

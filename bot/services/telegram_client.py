@@ -39,6 +39,34 @@ class SourceAccessDenied(PermissionError):
     """Raised when the account cannot access the requested source."""
 
 
+def friendly_error(exc: BaseException) -> str:
+    """Turn a Telethon/other exception into a clear, non-secret message."""
+    name = type(exc).__name__
+    text = str(exc)
+    lowered = text.lower()
+    if "floodwait" in name.lower() or "wait of" in lowered or "flood" in lowered:
+        return "Telegram rate limit hit (FloodWait). Wait a little, then retry."
+    if name in {
+        "AuthKeyUnregisteredError",
+        "AuthKeyDuplicatedError",
+        "SessionRevokedError",
+        "UserDeactivatedError",
+        "UserDeactivatedBanError",
+    }:
+        return "This session is no longer valid — reconnect the account."
+    if name in {"ChannelPrivateError", "ChatAdminRequiredError", "ChannelInvalidError"}:
+        return "That chat is not accessible from this account."
+    if name in {"UsernameNotOccupiedError", "UsernameInvalidError"}:
+        return "No such username for this account."
+    if name in {"PhoneCodeInvalidError", "PhoneCodeExpiredError"}:
+        return "The login code was invalid or expired. Try again."
+    if name in {"SessionPasswordNeededError"}:
+        return "This account has 2FA enabled — a password is required."
+    if name == "ScraperUnavailable":
+        return text
+    return f"{name}: {text[:180]}" if text else name
+
+
 def _classify(message) -> str | None:  # noqa: ANN001 - Telethon message
     if getattr(message, "photo", None):
         return "photo"
@@ -368,3 +396,49 @@ class TelethonScraper:
         return await asyncio.to_thread(
             scrape_to_file, collected, out, options=options, fmt=fmt, on_progress=on_progress
         )
+
+    async def clone(
+        self,
+        *,
+        label: str,
+        src_ref: str,
+        dest_ref: str,
+        limit: int = 1000,
+        delay: float = 1.0,
+        on_progress: ProgressFn | None = None,
+    ) -> int:
+        """Copy messages from a source chat into a destination channel.
+
+        Uses the account's own membership; nothing is bypassed. Returns the
+        number of messages copied.
+        """
+        client = await self._make_client(label)
+        copied = 0
+        batch: list = []
+        try:
+            async with client:
+                source, _ = await self._find_dialog_entity(client, src_ref)
+                if source is None:
+                    raise SourceAccessDenied(f"Source not accessible: {src_ref}")
+                destination, _ = await self._find_dialog_entity(client, dest_ref)
+                if destination is None:
+                    raise SourceAccessDenied(f"Destination not accessible: {dest_ref}")
+
+                async for message in client.iter_messages(source, limit=limit or None):
+                    batch.append(message)
+                    if len(batch) >= 50:
+                        await client.forward_messages(destination, batch, source)
+                        copied += len(batch)
+                        batch = []
+                        if on_progress:
+                            on_progress(copied)
+                        await asyncio.sleep(max(0.5, delay))
+                if batch:
+                    await client.forward_messages(destination, batch, source)
+                    copied += len(batch)
+                    if on_progress:
+                        on_progress(copied)
+        finally:
+            await self._store_blob(label)
+        return copied
+

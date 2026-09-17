@@ -37,6 +37,7 @@ PUBLIC_COMMANDS: list[BotCommand] = [
     BotCommand(command="plogin", description="Connect a private account (guide)"),
     BotCommand(command="myaccounts", description="List connected accounts"),
     BotCommand(command="history", description="Your recent scrapes"),
+    BotCommand(command="clone", description="Admin: clone a chat into a channel"),
     BotCommand(command="findbin", description="Extract records for a numeric BIN"),
     BotCommand(command="settings", description="Button / text mode"),
     BotCommand(command="app", description="Open the Mini App"),

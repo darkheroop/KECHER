@@ -177,6 +177,15 @@ def accounts_menu(accounts: list[tuple[str, str, bool]]) -> InlineKeyboardMarkup
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def clone_confirm() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_btn("✅ Start cloning", "clone:go")],
+            [_btn(f"{Emoji.CANCEL} Cancel", "clone:no")],
+        ]
+    )
+
+
 def scrape_intro(lang: str = "en") -> InlineKeyboardMarkup:
     from bot.ui.i18n import tr
 
