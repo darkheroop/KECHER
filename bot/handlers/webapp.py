@@ -22,6 +22,7 @@ from bot.db.repositories import get_or_create_user
 from bot.handlers.menu import help_text, welcome_text
 from bot.security.access import is_admin
 from bot.services.file_manager import FileManager
+from bot.ui.emoji import Emoji
 from bot.ui.keyboards import main_menu
 from bot.webapp import DIST_DIR, webapp_url
 

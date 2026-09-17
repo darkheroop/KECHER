@@ -123,8 +123,19 @@ async def _redirect_slash(request: web.Request) -> web.StreamResponse:
     raise web.HTTPPermanentRedirect(location="/miniapp/")
 
 
+@web.middleware
+async def _cache_middleware(request: web.Request, handler):  # noqa: ANN001, ANN201
+    response = await handler(request)
+    path = request.path
+    if path.startswith("/miniapp/assets") or path.startswith("/assets"):
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    elif path in {"/", "/miniapp", "/miniapp/"}:
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 def create_app(settings: Settings | None = None) -> web.Application:
-    app = web.Application()
+    app = web.Application(middlewares=[_cache_middleware])
     app["settings"] = settings or get_settings()
     app.router.add_get("/", _app_index)
     app.router.add_get("/miniapp", _redirect_slash)

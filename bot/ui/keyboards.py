@@ -177,6 +177,18 @@ def accounts_menu(accounts: list[tuple[str, str, bool]]) -> InlineKeyboardMarkup
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def scrape_recap() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                _btn(f"{Emoji.SCRAPE} Scrape again", "scr:start"),
+                _btn(f"{Emoji.SETTINGS} Defaults", "scr:defaults"),
+            ],
+            [_btn(f"{Emoji.SUCCESS} Main menu", "menu:home")],
+        ]
+    )
+
+
 def clone_confirm() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[

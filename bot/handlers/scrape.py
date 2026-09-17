@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import html
 import json
+import time
 from datetime import UTC, datetime, timedelta
 
 from aiogram import F, Router
@@ -47,6 +48,7 @@ from bot.ui.keyboards import (
     defaults_menu,
     scrape_intro,
     scrape_panel,
+    scrape_recap,
     scrape_sources,
 )
 from bot.ui.render import safe_edit
@@ -891,6 +893,7 @@ async def scr_run(
 ) -> None:
     sc = await _load_sc(state)
     tg_user = callback.from_user
+    started = time.monotonic()
     selected = [int(x) for x in (sc.get("selected") or [])]
     if not selected:
         await callback.answer("Pick at least one source", show_alert=True)
@@ -977,7 +980,9 @@ async def scr_run(
         raw = file_manager.allocate(telegram_id, f"Raw-{index}.txt", subdir="out")
         status = await callback.message.answer(
             f"{Emoji.SCRAPE} Scraping <b>{html.escape(title)}</b>"
-            f"  ·  {index}/{len(sources)}…"
+            f"  ·  {index}/{len(sources)}\n"
+            f"<i>{limit or 'All'} msg · {dates} · {sc.get('mode', 'messages')} · "
+            f"{fmt.upper()}</i>"
         )
         reporter = ProgressReporter(
             TelegramNotifier(callback.bot),
@@ -1102,6 +1107,16 @@ async def scr_run(
 
         if source is not sources[-1]:
             await asyncio.sleep(2)  # gentle pacing between sources (account safety)
+
+    elapsed = max(1, int(time.monotonic() - started))
+    await callback.message.answer(
+        f"{Emoji.SUCCESS} <b>Scrape finished</b>\n{DIVIDER}\n"
+        f"{Emoji.SCRAPE} Sources: <b>{len(sources)}</b>\n"
+        f"{Emoji.FIND} Matched: <b>{totals['matched']:,}</b>\n"
+        f"{Emoji.CLEAN} Valid records: <b>{totals['valid']:,}</b>\n"
+        f"{Emoji.TIME} Time: <b>{elapsed}s</b>",
+        reply_markup=scrape_recap(),
+    )
 
     if len(results) > 1:
         await state.update_data(combine_paths=results)
