@@ -177,6 +177,18 @@ def accounts_menu(accounts: list[tuple[str, str, bool]]) -> InlineKeyboardMarkup
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def scrape_intro(lang: str = "en") -> InlineKeyboardMarkup:
+    from bot.ui.i18n import tr
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_btn(f"{Emoji.SCRAPE} {tr(lang, 'sg_start')}", "scr:start")],
+            [_btn(f"{Emoji.HELP} {tr(lang, 'sg_guide')}", "scr:guide")],
+            [_btn(f"{Emoji.BACK} Back", "menu:home")],
+        ]
+    )
+
+
 def scrape_sources(
     sources: list[tuple[int, str]],
     *,

@@ -45,6 +45,14 @@ export type Me = {
   access: "admin" | "active" | "expired" | "none";
   remaining: string;
   admin: boolean;
+  owner: boolean;
+  role: "owner" | "admin" | "user";
+  ui_mode: string;
+  language: string;
+  active_account: string;
+  accounts_total: number;
+  accounts_connected: number;
+  sources_total: number;
 };
 
 export type Account = {

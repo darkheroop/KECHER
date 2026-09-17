@@ -164,6 +164,7 @@ export function CardFileBot() {
             setTheme={setTheme}
             status={me?.access ?? "none"}
             admin={Boolean(me?.admin)}
+            me={me}
           />
         ) : (
           <div className="screen-enter">
@@ -185,8 +186,9 @@ export function CardFileBot() {
   );
 }
 
-function Home({ selected, onSelect, open, theme, setTheme, status, admin }: { selected: Action | null; onSelect: (action: Action) => void; open: (screen: Screen) => void; theme: Theme; setTheme: (theme: Theme) => void; status: string; admin: boolean }) {
+function Home({ selected, onSelect, open, theme, setTheme, status, admin, me }: { selected: Action | null; onSelect: (action: Action) => void; open: (screen: Screen) => void; theme: Theme; setTheme: (theme: Theme) => void; status: string; admin: boolean; me: Me | null }) {
   const badge = status === "admin" ? "Admin" : status === "active" ? "Connected" : status === "expired" ? "Expired" : "Limited";
+  const accessLabel = status === "admin" ? "Admin" : status === "active" ? "Active" : status === "expired" ? "Expired" : "None";
   return (
     <>
       <header className="main-header">
@@ -206,8 +208,26 @@ function Home({ selected, onSelect, open, theme, setTheme, status, admin }: { se
       <main className="main-content">
         <div className="welcome-row">
           <div><span className="eyebrow">Workspace</span><h1>What are we running?</h1></div>
-          <span className="job-count">03 active</span>
+          <span className="job-count">{me ? `${me.accounts_connected}/${me.accounts_total} connected` : "03 active"}</span>
         </div>
+
+        {me && (
+          <section className="form-card panel">
+            <div className="form-title">
+              <h2>{me.name || "You"}{me.username ? ` · @${me.username}` : ""}</h2>
+              <span>{me.role.toUpperCase()}</span>
+            </div>
+            <div className="metrics">
+              <span><small>Access</small><strong>{accessLabel}</strong></span>
+              <span><small>Remaining</small><strong>{me.remaining || "—"}</strong></span>
+            </div>
+            <div className="metrics">
+              <span><small>Active account</small><strong>{me.active_account || "none"}</strong></span>
+              <span><small>Accounts</small><strong>{me.accounts_connected}/{me.accounts_total}</strong></span>
+              <span><small>Sources</small><strong>{me.sources_total}</strong></span>
+            </div>
+          </section>
+        )}
         <SectionLabel label="Files" meta="Choose one" />
         <div className="action-grid">
           {fileActions.map((action) => <ActionTile key={action.id} action={action} active={selected?.id === action.id} onClick={() => onSelect(action)} />)}

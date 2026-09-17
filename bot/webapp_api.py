@@ -96,27 +96,55 @@ def _ok(payload: dict) -> web.Response:
 
 async def api_me(request: web.Request) -> web.Response:
     settings, tg_user = await _require_user(request)
+    owner_id = int(tg_user["id"])
     async with session_scope() as session:
         user, _ = await get_or_create_user(
             session,
-            int(tg_user["id"]),
+            owner_id,
             username=tg_user.get("username"),
             first_name=tg_user.get("first_name"),
         )
         row = await get_user_settings(session, user.id)
         state = access_state(user, settings)
-        return _ok(
-            {
-                "id": user.telegram_id,
-                "name": tg_user.get("first_name") or "",
-                "username": tg_user.get("username") or "",
-                "access": state,
-                "remaining": format_remaining(user.access_until),
-                "admin": is_admin(user, settings),
-                "ui_mode": row.ui_mode,
-                "language": row.language,
-            }
-        )
+        is_owner = owner_id in set(settings.admin_ids)
+        admin = is_owner or is_admin(user, settings)
+        sources = await list_authorized_sources(session, user.id)
+        counts = {
+            "sources": len(sources),
+        }
+
+    registry = AccountRegistry(
+        settings.resolved_accounts_file(), settings.resolved_session_dir()
+    )
+    accounts = registry.load() if admin else registry.accounts_for(owner_id)
+    active = None
+    try:
+        async with session_scope() as session:
+            active = await get_bot_setting(
+                session, f"acting_account:{owner_id}"
+            ) or await get_bot_setting(session, f"active_account:{owner_id}")
+    except Exception:  # noqa: BLE001
+        active = None
+
+    counted = sum(1 for a in accounts if registry.status(a) == "Connected")
+    return _ok(
+        {
+            "id": user.telegram_id,
+            "name": tg_user.get("first_name") or "",
+            "username": tg_user.get("username") or "",
+            "access": state,
+            "remaining": format_remaining(user.access_until),
+            "admin": admin,
+            "owner": is_owner,
+            "role": "owner" if is_owner else ("admin" if admin else "user"),
+            "ui_mode": row.ui_mode,
+            "language": row.language,
+            "active_account": active or "",
+            "accounts_total": len(accounts),
+            "accounts_connected": counted,
+            "sources_total": counts["sources"],
+        }
+    )
 
 
 async def api_accounts(request: web.Request) -> web.Response:

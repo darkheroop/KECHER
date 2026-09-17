@@ -36,6 +36,7 @@ from bot.services.cards import clean_cards, merge_files
 from bot.services.file_manager import FileManager
 from bot.services.scraper import ScrapeOptions, is_scraper_available
 from bot.ui.emoji import Emoji
+from bot.ui.i18n import markdown_to_html, tr
 from bot.ui.keyboards import (
     account_help,
     accounts_menu,
@@ -43,6 +44,7 @@ from bot.ui.keyboards import (
     clean_prompt,
     combine_prompt,
     defaults_menu,
+    scrape_intro,
     scrape_panel,
     scrape_sources,
 )
@@ -180,14 +182,49 @@ async def _scrape_entry(reply: Message, tg_user, state: FSMContext, scraper, set
     )
 
 
+async def _lang_for(tg_user) -> str:  # noqa: ANN001
+    async with session_scope() as session:
+        user = await ensure_user(session, tg_user)
+        row = await get_user_settings(session, user.id)
+        return row.language
+
+
+async def _scrape_intro(reply: Message, tg_user) -> None:  # noqa: ANN001
+    lang = await _lang_for(tg_user)
+    text = (
+        f"{Emoji.SCRAPE} <b>{tr(lang, 'scrape_title')}</b>\n{DIVIDER}\n"
+        f"{markdown_to_html(tr(lang, 'scrape_guide'))}"
+    )
+    await reply.answer(text, reply_markup=scrape_intro(lang))
+
+
 @router.message(Command("scrape"))
 async def cmd_scrape(message: Message, state: FSMContext, scraper, settings: Settings) -> None:  # noqa: ANN001
     assert message.from_user is not None
-    await _scrape_entry(message, message.from_user, state, scraper, settings)
+    await _scrape_intro(message, message.from_user)
 
 
 @router.callback_query(F.data == "menu:scrape")
 async def menu_scrape(callback: CallbackQuery, state: FSMContext, scraper, settings: Settings) -> None:  # noqa: ANN001
+    if callback.message is not None:
+        await _scrape_intro(callback.message, callback.from_user)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "scr:guide")
+async def scr_guide(callback: CallbackQuery, state: FSMContext, settings: Settings) -> None:
+    if callback.message is not None:
+        await _scrape_intro(callback.message, callback.from_user)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "scr:start")
+async def scr_start(
+    callback: CallbackQuery,
+    state: FSMContext,
+    scraper,  # noqa: ANN001
+    settings: Settings,
+) -> None:
     if callback.message is not None:
         await _scrape_entry(callback.message, callback.from_user, state, scraper, settings)
     await callback.answer()

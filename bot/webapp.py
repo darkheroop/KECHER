@@ -101,7 +101,14 @@ PAGE = """<!DOCTYPE html>
 
 
 async def _healthz(request: web.Request) -> web.Response:
-    return web.json_response({"ok": True})
+    return web.json_response(
+        {
+            "ok": True,
+            "dist": DIST_DIR.is_dir(),
+            "index": (DIST_DIR / "index.html").is_file(),
+            "miniapp_url": webapp_url(request.app["settings"]),
+        }
+    )
 
 
 async def _app_index(request: web.Request) -> web.StreamResponse:
@@ -147,10 +154,13 @@ def webapp_url(settings: Settings) -> str:
 
 
 async def start_webapp(settings: Settings) -> web.AppRunner | None:
-    """Start the HTTP server if a Mini App is configured."""
-    if not settings.public_base_url and not settings.webapp_port and not os.getenv("PORT"):
+    """Start the HTTP server (Railway always provides PORT)."""
+    env_port = os.getenv("PORT")
+    if not settings.public_base_url and not settings.webapp_port and not env_port:
+        logger.info("Mini App disabled (no PORT / PUBLIC_BASE_URL / WEBAPP_PORT)")
         return None
-    port = settings.webapp_port or int(os.getenv("PORT", "8080"))
+
+    port = settings.webapp_port or int(env_port or "8080")
     runner = web.AppRunner(create_app(settings))
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)
@@ -160,6 +170,16 @@ async def start_webapp(settings: Settings) -> web.AppRunner | None:
         logger.exception("Could not start Mini App web server on port %s", port)
         await runner.cleanup()
         return None
-    logger.info("Mini App server listening on :%s", port)
+
+    url = webapp_url(settings)
+    if url:
+        logger.info("Mini App server on :%s · public %s", port, url)
+    else:
+        logger.warning(
+            "Mini App server on :%s but PUBLIC_BASE_URL is empty -> the Telegram "
+            "menu button will NOT be set. Example: /miniapp/ on your Railway domain",
+            port,
+        )
     return runner
+
 
