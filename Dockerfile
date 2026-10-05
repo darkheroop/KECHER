@@ -17,5 +17,5 @@ COPY . .
 # can write to that root-owned mount (a non-root user gets EACCES on /data).
 RUN mkdir -p /app/var /data
 
-# Apply migrations, then start the bot.
-CMD ["sh", "-c", "alembic upgrade head && python -m bot.main"]
+# Apply migrations if possible, then start the bot (bot.main self-heals the schema).
+CMD ["sh", "-c", "alembic upgrade head || true && python -m bot.main"]
