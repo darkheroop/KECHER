@@ -454,6 +454,7 @@ class TelethonScraper:
         )
         semaphore = asyncio.Semaphore(max(1, workers))
         limit = options.limit or 0
+        first_error: list[Exception] = []
 
         async def task(term: str, lo, hi) -> None:  # noqa: ANN001
             async with semaphore:
@@ -471,11 +472,15 @@ class TelethonScraper:
                         sink.consider(to_datum(message))
                         await notifier.tick(state, sink)
                 except Exception as exc:  # noqa: BLE001 - one worker must not kill the run
+                    if not first_error:
+                        first_error.append(exc)
                     logger.warning("Search worker failed (%s)", friendly_error(exc))
 
         await asyncio.gather(
             *(task(term, lo, hi) for term in keywords for lo, hi in windows)
         )
+        if not sink.scanned and first_error:
+            raise first_error[0]
 
     async def _scan_history(
         self, client, entity, sink, options, state, notifier, should_stop, workers  # noqa: ANN001
@@ -485,6 +490,7 @@ class TelethonScraper:
         )
         semaphore = asyncio.Semaphore(max(1, workers))
         limit = options.limit or 0
+        first_error: list[Exception] = []
 
         async def task(lo, hi) -> None:  # noqa: ANN001
             async with semaphore:
@@ -502,9 +508,13 @@ class TelethonScraper:
                         sink.consider(to_datum(message))
                         await notifier.tick(state, sink)
                 except Exception as exc:  # noqa: BLE001 - one worker must not kill the run
+                    if not first_error:
+                        first_error.append(exc)
                     logger.warning("History worker failed (%s)", friendly_error(exc))
 
         await asyncio.gather(*(task(lo, hi) for lo, hi in windows))
+        if not sink.scanned and first_error:
+            raise first_error[0]
 
     # -- dialogs ------------------------------------------------------------ #
     @staticmethod

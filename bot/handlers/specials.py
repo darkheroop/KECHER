@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import html
+import logging
 import time
 from datetime import UTC, datetime, timedelta
 
@@ -49,17 +50,24 @@ from bot.ui.render import safe_edit
 
 router = Router(name="specials")
 
+logger = logging.getLogger(__name__)
+
 DIVIDER = "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄"
 _EDIT_INTERVAL = 1.2
+_collect_locks: dict[int, asyncio.Lock] = {}
+
+
+def _lock_for(telegram_id: int) -> asyncio.Lock:
+    if telegram_id not in _collect_locks:
+        _collect_locks[telegram_id] = asyncio.Lock()
+    return _collect_locks[telegram_id]
 
 SET_NAME_TEXT = (
     f"{Emoji.PAGE} <b>Custom file name</b>\n{DIVIDER}\n"
-    "Send the name (the <code>.txt</code> is added automatically).\n\n"
-    "<b>Placeholders</b>\n"
-    "<code>{op}</code> — cleaned / live / deduped / filtered / part / scraped\n"
-    "<code>{index}</code> — part or source number\n"
-    "<code>{keyword}</code> · <code>{source}</code> "
-    "· <code>{date}</code> · <code>{time}</code>\n\n"
+    "Send just the name — the <code>.txt</code> is added for you.\n\n"
+    "<b>Placeholders</b>  <code>{op}</code> <code>{index}</code> <code>{keyword}</code> "
+    "<code>{source}</code> <code>{date}</code> <code>{time}</code>\n"
+    "<code>{op}</code> = cleaned / live / deduped / filtered / part / scraped\n\n"
     "Examples:\n"
     "<code>mycards_{op}</code> → <code>mycards_cleaned.txt</code>\n"
     "<code>{source}_{op}</code> → <code>VIP_group_filtered.txt</code>\n\n"
@@ -264,8 +272,9 @@ async def _push_status(message: Message, state: FSMContext, force: bool = False)
             )
             await state.update_data(spec_edit=now)
             return
-    sent = await message.answer(text, reply_markup=keyboard)
-    await state.update_data(spec_status=sent.message_id, spec_edit=now)
+    with contextlib.suppress(Exception):
+        sent = await message.answer(text, reply_markup=keyboard)
+        await state.update_data(spec_status=sent.message_id, spec_edit=now)
 
 
 async def _start_collect(
@@ -674,24 +683,32 @@ async def spec_txt(
 # --------------------------------------------------------------------------- #
 # Custom output file name
 # --------------------------------------------------------------------------- #
+def _name_card_text(saved: str, once: str, suffix: str) -> str:
+    preview = naming.render(saved or None, op="cleaned")
+    next_preview = naming.render(once or None, op="cleaned") if once else "—"
+    return "\n".join(
+        [
+            f"{Emoji.PAGE} <b>Output file name</b>\n{DIVIDER}",
+            f"Saved · <code>{html.escape(saved) or 'default'}</code>",
+            f"Example → <code>{html.escape(preview)}</code>",
+            f"Next output · <code>{html.escape(next_preview)}</code>",
+            "",
+            f"Suffix · <code>{html.escape(suffix) or 'none'}</code>",
+            "",
+            "<i>Placeholders: {op} {index} {keyword} {source} {date} {time}</i>",
+        ]
+    )
+
+
 async def _show_name_menu(callback: CallbackQuery, state: FSMContext) -> None:
     data = await prefs.load_prefs(callback.from_user.id)
     saved = str(data.get("filename") or "").strip()
     once = str(data.get("filename_once") or "").strip()
-    suffix = naming.suffix().strip() or "none"
-    lines = [
-        f"{Emoji.PAGE} <b>Output file name</b>\n{DIVIDER}",
-        f"Saved · {naming.describe(saved)}",
-        f"Next output · {naming.describe(once) if once else '—'}",
-        "",
-        "Placeholders: <code>{op}</code> <code>{index}</code> <code>{keyword}</code> "
-        "<code>{source}</code> <code>{date}</code> <code>{time}</code>",
-        "Default · <code>{op}</code> → <code>cleaned.txt</code>, split → "
-        "<code>part-1.txt</code>",
-        "",
-        f"Suffix · <code>{html.escape(suffix)}</code>",
-    ]
-    await safe_edit(callback.message, "\n".join(lines), reply_markup=filename_menu())
+    await safe_edit(
+        callback.message,
+        _name_card_text(saved, once, naming.suffix()),
+        reply_markup=filename_menu(),
+    )
 
 
 @router.callback_query(F.data == "spec:name")
@@ -746,7 +763,6 @@ async def on_filename(message: Message, state: FSMContext) -> None:
         reply_markup=filename_menu(),
     )
 
-
 @router.message(Command("filename"))
 async def cmd_filename(message: Message, state: FSMContext) -> None:
     if message.from_user is None:
@@ -757,12 +773,10 @@ async def cmd_filename(message: Message, state: FSMContext) -> None:
         saved = str(data.get("filename") or "").strip()
         once = str(data.get("filename_once") or "").strip()
         await message.answer(
-            f"{Emoji.PAGE} <b>Output file name</b>\n{DIVIDER}\n"
-            f"Saved · {naming.describe(saved)}\n"
-            f"Next output · {naming.describe(once) if once else '—'}\n\n"
-            "Usage:\n<code>/filename mycards_{op}</code> — save a template\n"
-            "<code>/filename -</code> — reset to default\n"
-            "Tap File name in /specials for the next-output option.",
+            _name_card_text(saved, once, naming.suffix())
+            + "\n\n<code>/filename mycards_{op}</code> · set a template\n"
+            "<code>/filename -</code> · reset\n"
+            "or tap <b>File name</b> in /specials.",
             reply_markup=filename_menu(),
         )
         return
@@ -823,32 +837,41 @@ async def spec_collect(
     message: Message, state: FSMContext, file_manager: FileManager
 ) -> None:
     tg_user = message.from_user
-    assert tg_user is not None
-    data = await state.get_data()
-    rel = data.get("spec_draft")
-    if not rel:
-        await state.clear()
+    if tg_user is None:
         return
-
-    text = (message.text or message.caption or "").strip()
-    count = int(data.get("spec_count", 0))
-    lines = int(data.get("spec_lines", 0))
-    skipped = int(data.get("spec_skipped", 0))
-
-    if not text:
-        skipped += 1
-    else:
+    # Forwards arrive as a burst; a per-user lock keeps writes and the live
+    # status edit serialized (no torn lines, no concurrent-edit crash).
+    async with _lock_for(tg_user.id):
         try:
-            path = file_manager.resolve(tg_user.id, rel, create_parent=True)
-            with path.open("a", encoding="utf-8", newline="\n") as handle:
-                for line in text.splitlines():
-                    if line.strip():
-                        handle.write(line.rstrip() + "\n")
-                        lines += 1
-        except OSError:
-            await message.answer(f"{Emoji.ERROR} Could not write the draft file.")
-            return
-        count += 1
+            data = await state.get_data()
+            rel = data.get("spec_draft")
+            if not rel:
+                await state.clear()
+                return
 
-    await state.update_data(spec_count=count, spec_lines=lines, spec_skipped=skipped)
-    await _push_status(message, state)
+            text = (message.text or message.caption or "").strip()
+            count = int(data.get("spec_count", 0))
+            lines = int(data.get("spec_lines", 0))
+            skipped = int(data.get("spec_skipped", 0))
+
+            if not text:
+                skipped += 1
+            else:
+                try:
+                    path = file_manager.resolve(tg_user.id, rel, create_parent=True)
+                    with path.open("a", encoding="utf-8", newline="\n") as handle:
+                        for line in text.splitlines():
+                            if line.strip():
+                                handle.write(line.rstrip() + "\n")
+                                lines += 1
+                except OSError:
+                    await message.answer(f"{Emoji.ERROR} Could not write the draft file.")
+                    return
+                count += 1
+
+            await state.update_data(
+                spec_count=count, spec_lines=lines, spec_skipped=skipped
+            )
+            await _push_status(message, state)
+        except Exception:  # noqa: BLE001 - one bad update must never kill the flow
+            logger.exception("collector failed for user %s", tg_user.id)

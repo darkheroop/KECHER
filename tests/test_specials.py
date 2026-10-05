@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -152,6 +153,22 @@ async def test_cancel_discards_the_draft(settings) -> None:
     await state.clear()
     files.delete(msg.from_user.id, rel)
     assert not draft.exists()
+
+
+async def test_collector_survives_a_burst_of_forwards(settings) -> None:
+    files = FileManager(settings)
+    state = _state()
+    msg = FakeMessage(text="seed")
+    await _start_collect(msg, msg.from_user, state, files)
+
+    await asyncio.gather(
+        *(spec_collect(FakeMessage(text=f"line {i}"), state, files) for i in range(100))
+    )
+
+    data = await state.get_data()
+    assert data["spec_count"] == 100
+    draft = files.resolve(msg.from_user.id, data["spec_draft"])
+    assert len(draft.read_text(encoding="utf-8").splitlines()) == 100
 
 
 @pytest.mark.parametrize("state_name", ["collecting_specials"])
