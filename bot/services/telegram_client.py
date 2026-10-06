@@ -111,7 +111,7 @@ def to_datum(message) -> MessageDatum:  # noqa: ANN001 - Telethon message
     return MessageDatum(
         id=int(message.id),
         date=message.date,
-        text=getattr(message, "raw_text", None) or "",
+        text=getattr(message, "raw_text", None) or getattr(message, "message", "") or "",
         sender_id=getattr(message, "sender_id", None),
         media_type=_classify(message),
         file_name=file_name,
@@ -455,6 +455,7 @@ class TelethonScraper:
         semaphore = asyncio.Semaphore(max(1, workers))
         limit = options.limit or 0
         first_error: list[Exception] = []
+        matched_ids: list[int] = []
 
         async def task(term: str, lo, hi) -> None:  # noqa: ANN001
             async with semaphore:
@@ -469,7 +470,9 @@ class TelethonScraper:
                         if state.scanned % 50 == 0 and await _stop_requested(should_stop):
                             return
                         state.bump(message.date)
-                        sink.consider(to_datum(message))
+                        datum = to_datum(message)
+                        if sink.consider(datum):
+                            matched_ids.append(datum.id)
                         await notifier.tick(state, sink)
                 except Exception as exc:  # noqa: BLE001 - one worker must not kill the run
                     if not first_error:
@@ -479,6 +482,26 @@ class TelethonScraper:
         await asyncio.gather(
             *(task(term, lo, hi) for term in keywords for lo, hi in windows)
         )
+
+        # Pull ±1 related messages around each match (bounded so huge hits don't explode).
+        if options.context and matched_ids and len(matched_ids) <= 400:
+            neighbor_ids: list[int] = []
+            for mid in matched_ids:
+                neighbor_ids.extend((mid - 1, mid + 1))
+            try:
+                async for message in client.iter_messages(entity, ids=neighbor_ids):
+                    if message is None:
+                        continue
+                    if limit and sink.exported >= limit:
+                        break
+                    if await _stop_requested(should_stop):
+                        break
+                    state.bump(message.date)
+                    sink.add_direct(to_datum(message))
+                    await notifier.tick(state, sink)
+            except Exception as exc:  # noqa: BLE001 - context is best-effort
+                logger.warning("Context fetch failed (%s)", friendly_error(exc))
+
         if not sink.scanned and first_error:
             raise first_error[0]
 
@@ -494,6 +517,8 @@ class TelethonScraper:
 
         async def task(lo, hi) -> None:  # noqa: ANN001
             async with semaphore:
+                prev_datum = None
+                include_next = 0
                 try:
                     async for message in client.iter_messages(
                         entity, limit=(limit or None), offset_date=hi, wait_time=0
@@ -505,7 +530,16 @@ class TelethonScraper:
                         if state.scanned % 50 == 0 and await _stop_requested(should_stop):
                             return
                         state.bump(message.date)
-                        sink.consider(to_datum(message))
+                        datum = to_datum(message)
+                        matched = sink.consider(datum)
+                        if matched:
+                            if options.context and prev_datum is not None:
+                                sink.add_direct(prev_datum)
+                            include_next = options.context
+                        elif include_next > 0:
+                            sink.add_direct(datum)
+                            include_next -= 1
+                        prev_datum = datum
                         await notifier.tick(state, sink)
                 except Exception as exc:  # noqa: BLE001 - one worker must not kill the run
                     if not first_error:
@@ -555,6 +589,85 @@ class TelethonScraper:
         finally:
             await self._store_blob(label)
         return found
+
+    async def leave_chat(self, label: str, peer_ref: str) -> None:
+        """Leave a joined channel/group so the user's account is restored."""
+        from telethon import functions  # lazy
+        from telethon.tl.types import Channel, Chat
+
+        client = await self._make_client(label)
+        try:
+            async with client:
+                entity, _ = await self._find_dialog_entity(client, peer_ref)
+                if entity is None:
+                    raise SourceAccessDenied("That chat isn't in your dialogs.")
+                if isinstance(entity, Channel):
+                    await client(functions.channels.LeaveChannelRequest(entity))
+                elif isinstance(entity, Chat):
+                    me = await client.get_me()
+                    await client(functions.messages.DeleteChatUserRequest(entity.id, me))
+                else:
+                    raise SourceAccessDenied("This chat type can't be left automatically.")
+        finally:
+            await self._store_blob(label)
+
+    @staticmethod
+    def _invite_hash(link: str) -> str | None:
+        ref = (link or "").strip()
+        for needle in ("t.me/+", "joinchat/", "t.me/joinchat/"):
+            if needle in ref:
+                return ref.split(needle, 1)[1].split("/")[0].split("?")[0]
+        if ref.startswith("+"):
+            return ref[1:].split("/")[0].split("?")[0]
+        return None
+
+    @staticmethod
+    def _username(link: str) -> str | None:
+        ref = (link or "").strip()
+        if ref.startswith("@"):
+            return ref[1:].split("/")[0].split("?")[0]
+        if "t.me/" in ref and "+" not in ref and "joinchat" not in ref:
+            return ref.split("t.me/", 1)[1].split("/")[0].split("?")[0]
+        return None
+
+    async def join_chat(self, label: str, link: str) -> tuple[int, str]:
+        """Join a channel/group by invite link or @username. Returns (peer_id, title)."""
+        from telethon import errors, functions  # lazy
+
+        client = await self._make_client(label)
+        ref = (link or "").strip()
+        if not ref:
+            raise SourceAccessDenied("Send a link or @username.")
+
+        try:
+            async with client:
+                hash_part = self._invite_hash(ref)
+                if hash_part:
+                    try:
+                        updates = await client(
+                            functions.messages.ImportChatInviteRequest(hash_part)
+                        )
+                    except errors.UserAlreadyParticipantError as exc:
+                        raise SourceAccessDenied(
+                            "You're already a member of that chat. Use /scrape on it instead."
+                        ) from exc
+                    chats = getattr(updates, "chats", []) or []
+                    if not chats:
+                        raise SourceAccessDenied("Could not join that chat.")
+                    chat = chats[0]
+                    return int(chat.id), getattr(chat, "title", None) or "joined chat"
+
+                username = self._username(ref)
+                if username:
+                    await client(functions.channels.JoinChannelRequest(username))
+                    entity = await client.get_entity(username)
+                    return int(entity.id), getattr(entity, "title", None) or username
+
+                raise SourceAccessDenied(
+                    "Unrecognised link. Use t.me/+…, t.me/joinchat/… or @username."
+                )
+        finally:
+            await self._store_blob(label)
 
     async def _flush_batch(self, client, dest, batch, source, copy: bool) -> None:  # noqa: ANN001
         try:

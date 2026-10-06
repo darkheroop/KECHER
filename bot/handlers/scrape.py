@@ -44,6 +44,7 @@ from bot.ui.keyboards import (
     account_help,
     accounts_menu,
     api_setup,
+    back_to_menu,
     clean_prompt,
     combine_prompt,
     defaults_menu,
@@ -52,6 +53,8 @@ from bot.ui.keyboards import (
     scrape_confirm,
     scrape_progress,
     scrape_recap,
+    scr_join_confirm,
+    scr_leave_prompt,
     scrape_sources,
 )
 from bot.ui.render import safe_edit
@@ -157,6 +160,7 @@ def _panel_text(sc: dict, title: str) -> str:
     mode = "Cards" if sc.get("mode") == "cards" else "Messages"
     autoclean = "on" if sc.get("autoclean") else "off"
     media = "on" if sc.get("include_media") else "off"
+    related = "on" if sc.get("context") else "off"
     dates = {"none": "all", "7": "7d", "30": "30d", "custom": "custom"}.get(
         sc.get("dates", "none"), "all"
     )
@@ -166,7 +170,7 @@ def _panel_text(sc: dict, title: str) -> str:
         f"Keywords · <b>{html.escape(keywords)}</b>\n"
         f"Limit · <b>{limit or 'All'}</b>   Mode · <b>{mode}</b>\n"
         f"Dates · <b>{dates}</b>   Media · <b>{media}</b>\n"
-        f"Auto-clean · <b>{autoclean}</b>"
+        f"Auto-clean · <b>{autoclean}</b>   Related ±1 · <b>{related}</b>"
     )
 
 
@@ -795,6 +799,15 @@ async def scr_dry(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer("Dry-run " + ("on" if sc["dry_run"] else "off"))
 
 
+@router.callback_query(F.data == "scr:ctx")
+async def scr_context(callback: CallbackQuery, state: FSMContext) -> None:
+    sc = await _load_sc(state)
+    sc["context"] = 0 if sc.get("context") else 1
+    await _save_sc(state, sc)
+    await safe_edit(callback.message, _panel_text(sc, sc.get("source_title", "")), reply_markup=scrape_panel(sc))
+    await callback.answer("Related ±1 " + ("on" if sc["context"] else "off"))
+
+
 @router.callback_query(F.data.startswith("scr:fmt:"))
 async def scr_format(callback: CallbackQuery, state: FSMContext) -> None:
     value = (callback.data or "").rsplit(":", 1)[-1]
@@ -1044,6 +1057,7 @@ async def _execute_scrape(
         date_to=date_to,
         text_only=(fmt == "txt"),
         include_media=bool(sc.get("include_media")),
+        context=1 if sc.get("context") else 0,
     )
     base = "Scrape " + ("+".join(keywords) if keywords else "all")
     telegram_id = tg_user.id
@@ -1416,3 +1430,268 @@ async def cmd_history(message: Message) -> None:
             f"   {html.escape(srcs)}"
         )
     await message.answer("\n".join(lines))
+
+
+# --------------------------------------------------------------------------- #
+# /scr <invite-link|@username> [amount]  --  join, scrape, then ask to leave
+# --------------------------------------------------------------------------- #
+SCR_JOIN_MAX_PER_HOUR = 5
+_join_log: dict[int, list[float]] = {}
+
+
+def _join_allowed(telegram_id: int) -> bool:
+    now = time.monotonic()
+    recent = [t for t in _join_log.get(telegram_id, []) if now - t < 3600]
+    _join_log[telegram_id] = recent
+    return len(recent) < SCR_JOIN_MAX_PER_HOUR
+
+
+def _record_join(telegram_id: int) -> None:
+    _join_log.setdefault(telegram_id, []).append(time.monotonic())
+
+
+SCR_USAGE = (
+    f"{Emoji.SCRAPE} <b>/scr — join &amp; scrape</b>\n{DIVIDER}\n"
+    "The bot joins a chat with <b>your</b> connected account, scrapes recent "
+    "messages, then asks before leaving.\n\n"
+    "Usage:\n<code>/scr &lt;link&gt; [amount]</code>\n\n"
+    "Examples:\n<code>/scr https://t.me/+abCdEF 500</code>\n"
+    "<code>/scr @publicchannel 200</code>\n"
+    "<code>/scr https://t.me/joinchat/abCdEF</code>\n\n"
+    f"• default 200, max 5000 messages\n"
+    f"• up to {SCR_JOIN_MAX_PER_HOUR} joins/hour per user (account safety)\n"
+    f"{Emoji.SECURITY} The account must already be allowed into the chat."
+)
+
+
+@router.message(Command("scr"))
+async def cmd_scr(
+    message: Message, state: FSMContext, scraper, settings: Settings  # noqa: ANN001
+) -> None:
+    tg_user = message.from_user
+    assert tg_user is not None
+    parts = (message.text or "").split()
+    if len(parts) < 2 or not parts[1].strip():
+        await message.answer(SCR_USAGE, reply_markup=back_to_menu())
+        return
+
+    link = parts[1].strip()
+    amount = 200
+    if len(parts) > 2 and parts[2].isdigit():
+        amount = max(1, min(int(parts[2]), 5000))
+
+    if not scraper.user_connected(tg_user.id):
+        await message.answer(
+            f"{Emoji.LOGIN} Connect your account first: /scrape",
+            reply_markup=account_help(),
+        )
+        return
+    if not _join_allowed(tg_user.id):
+        await message.answer(
+            f"{Emoji.WARNING} Too many joins recently. Wait an hour and retry "
+            f"(limit: {SCR_JOIN_MAX_PER_HOUR}/hour to protect the account)."
+        )
+        return
+
+    masked = "+" + ("*" * max(0, len(link) - 1)) if ("+" in link or "joinchat" in link) else link
+    await state.update_data(scr_join={"link": link, "amount": amount, "title": masked})
+    await message.answer(
+        f"{Emoji.SCRAPE} <b>Join &amp; scrape</b>\n{DIVIDER}\n"
+        f"Link · <code>{html.escape(masked)}</code>\n"
+        f"Amount · <b>{amount:,}</b> messages\n"
+        "I'll join, scrape, then ask before leaving.\n\n"
+        "What do you want to scrape?",
+        reply_markup=scr_join_confirm(),
+    )
+
+
+@router.callback_query(F.data == "scrjoin:no")
+async def scr_join_cancel(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await safe_edit(callback.message, f"{Emoji.CANCEL} Cancelled.", reply_markup=back_to_menu())
+    await callback.answer()
+
+
+@router.callback_query(F.data == "scrjoin:all")
+async def scr_join_all(
+    callback: CallbackQuery, state: FSMContext, scraper, file_manager: FileManager, settings: Settings  # noqa: ANN001
+) -> None:
+    await state.update_data(scr_keywords=[])
+    await _run_scr_join(callback, state, scraper, file_manager, settings)
+
+
+@router.callback_query(F.data == "scrjoin:kw")
+async def scr_join_kw(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(Flow.awaiting_scr_keyword)
+    await safe_edit(
+        callback.message,
+        f"{Emoji.FIND} <b>Scrape a keyword</b>\n{DIVIDER}\n"
+        "Send the keyword(s) — comma separated for several "
+        "(e.g. <code>visa, canada</code>).\n\n"
+        "Send <code>-</code> to scrape everything instead.",
+    )
+    await callback.answer()
+
+
+@router.message(Flow.awaiting_scr_keyword)
+async def on_scr_keyword(
+    message: Message, state: FSMContext, scraper, file_manager: FileManager, settings: Settings  # noqa: ANN001
+) -> None:
+    raw = (message.text or "").strip()
+    if raw in {"-", ""}:
+        kws: list[str] = []
+    else:
+        kws = [w.strip() for w in raw.split(",") if w.strip()]
+    await state.set_state(None)
+    await state.update_data(scr_keywords=kws)
+    await _run_scr_join(message, state, scraper, file_manager, settings)
+
+
+async def _run_scr_join(
+    event, state: FSMContext, scraper, file_manager: FileManager, settings: Settings  # noqa: ANN001
+) -> None:
+    tg_user = event.from_user
+    message = event.message if isinstance(event, CallbackQuery) else event
+    is_callback = isinstance(event, CallbackQuery)
+    data = await state.get_data()
+    cfg = data.get("scr_join") or {}
+    link = cfg.get("link")
+    amount = int(cfg.get("amount") or 200)
+    kws = data.get("scr_keywords") or []
+
+    if not link:
+        if is_callback:
+            await event.answer("Session expired. Use /scr again.", show_alert=True)
+        return
+    if is_callback:
+        await event.answer()
+    if not _join_allowed(tg_user.id):
+        await message.answer(f"{Emoji.WARNING} Join limit reached. Wait an hour and retry.")
+        return
+    label = (await scraper.acting_label(tg_user.id)) or (await scraper.active_label(tg_user.id))
+    if label is None:
+        await message.answer(f"{Emoji.LOGIN} No connected account.")
+        return
+
+    status = await message.answer(f"{Emoji.SCRAPE} Joining the chat…")
+    _record_join(tg_user.id)
+    try:
+        peer_id, title = await scraper.join_chat(label, link)
+    except Exception as exc:  # noqa: BLE001
+        await safe_edit(status, f"{Emoji.ERROR} {html.escape(friendly_error(exc))}", reply_markup=back_to_menu())
+        return
+
+    await safe_edit(
+        status,
+        f"{Emoji.SUCCESS} Joined <b>{html.escape(title)}</b>\n"
+        f"{Emoji.SCRAPE} Scraping <b>{amount:,}</b> messages…",
+        reply_markup=scrape_progress(),
+    )
+
+    raw = file_manager.allocate(
+        tg_user.id, await naming.output_name(tg_user.id, "scraped"), subdir="out"
+    )
+    card = _LiveCard(
+        message.bot, message.chat.id, status.message_id,
+        header=f"{Emoji.SCRAPE} <b>{html.escape(title)}</b>",
+    )
+    options = ScrapeOptions(
+        limit=amount,
+        keywords=kws,
+        include_media=False,
+        text_only=True,
+        keyword_mode="contains",
+        context=1 if kws else 0,
+    )
+    try:
+        result = await scraper.scrape(
+            label=label,
+            peer_ref=str(peer_id),
+            out=raw.path,
+            options=options,
+            fmt="txt",
+            on_scan=card.on_scan,
+            should_stop=lambda: _stop_now(state),
+            workers=max(1, settings.scrape_workers),
+        )
+    except Exception as exc:  # noqa: BLE001
+        await safe_edit(
+            status,
+            f"{Emoji.ERROR} {html.escape(friendly_error(exc))}",
+            reply_markup=EMPTY_MARKUP,
+        )
+        return
+
+    cleaned_alloc = file_manager.allocate(
+        tg_user.id, await naming.output_name(tg_user.id, "cleaned"), subdir="out"
+    )
+    report = await asyncio.to_thread(clean_cards, raw.path, cleaned_alloc.path)
+    raw_stored = file_manager.finalize(raw)
+    cleaned = file_manager.finalize(cleaned_alloc)
+    async with session_scope() as session:
+        user = await ensure_user(session, tg_user)
+        user_settings = await get_user_settings(session, user.id)
+        for stored in (raw_stored, cleaned):
+            await create_file(
+                session,
+                user_id=user.id,
+                original_name=stored.safe_name,
+                safe_name=stored.safe_name,
+                rel_path=stored.rel_path,
+                size_bytes=stored.size_bytes,
+                sha256=stored.sha256,
+                expires_at=datetime.now(UTC) + timedelta(minutes=max(1, user_settings.cleanup_minutes)),
+            )
+    await safe_edit(
+        status,
+        f"{Emoji.SUCCESS} <b>{html.escape(title)}</b>\n{DIVIDER}\n"
+        f"📨 Matched  ·  {result.exported:,}\n"
+        f"🧹 Valid  ·  {report.valid:,}\n"
+        f"💾 Size  ·  {raw_stored.size_bytes:,} bytes",
+        reply_markup=EMPTY_MARKUP,
+    )
+    await message.answer_document(
+        FSInputFile(raw_stored.path, filename=_tag(raw_stored.safe_name)),
+        caption=(
+            f"📄 <b>{html.escape(title)}</b>\n"
+            f"📨 Matches  ·  {result.exported:,}\n"
+            f"📄 Size  ·  {raw_stored.size_bytes:,} bytes"
+        ),
+    )
+    await state.update_data(last_raw=raw_stored.rel_path, last_title=title, scr_peer=str(peer_id))
+    await message.answer(
+        f"{Emoji.CLEAN} <b>Clean this file?</b>\n"
+        "Keeps only card records.",
+        reply_markup=clean_prompt(),
+    )
+    await message.answer(
+        f"{Emoji.INBOX} <b>Stay or leave?</b>\n{DIVIDER}\n"
+        f"Your account joined <b>{html.escape(title)}</b>.\n"
+        "Leave now, or stay subscribed?",
+        reply_markup=scr_leave_prompt(),
+    )
+
+
+@router.callback_query(F.data == "scrjoin:leave")
+async def scr_join_leave(callback: CallbackQuery, state: FSMContext, scraper, settings: Settings) -> None:  # noqa: ANN001
+    data = await state.get_data()
+    peer = data.get("scr_peer")
+    if not peer:
+        await callback.answer("Nothing to leave.", show_alert=True)
+        return
+    label = (await scraper.acting_label(callback.from_user.id)) or (await scraper.active_label(callback.from_user.id))
+    await callback.answer("Leaving…")
+    try:
+        if label is not None:
+            await scraper.leave_chat(label, str(peer))
+        await safe_edit(callback.message, f"{Emoji.SUCCESS} Left the chat.", reply_markup=back_to_menu())
+    except Exception as exc:  # noqa: BLE001
+        await safe_edit(callback.message, f"{Emoji.ERROR} {html.escape(friendly_error(exc))}", reply_markup=back_to_menu())
+    await state.clear()
+
+
+@router.callback_query(F.data == "scrjoin:stay")
+async def scr_join_stay(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await safe_edit(callback.message, f"{Emoji.SUCCESS} Keeping the subscription.", reply_markup=back_to_menu())
+    await callback.answer()

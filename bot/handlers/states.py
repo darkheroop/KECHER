@@ -30,3 +30,4 @@ class Flow(StatesGroup):
     collecting_specials = State()
     awaiting_filename = State()
     awaiting_suffix = State()
+    awaiting_scr_keyword = State()

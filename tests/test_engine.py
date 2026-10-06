@@ -88,3 +88,14 @@ def test_output_sink_rejects_unknown_format(tmp_path) -> None:
 )
 def test_format_duration(seconds, expected) -> None:
     assert format_duration(seconds) == expected
+
+
+def test_output_sink_add_direct_bypasses_keyword_filter(tmp_path) -> None:
+    out = tmp_path / "ctx.txt"
+    sink = OutputSink(out, options=ScrapeOptions(keywords=["visa"], limit=0), fmt="txt")
+    assert sink.consider(_datum(1, "visa card")) is True  # match
+    # A neighbour with no keyword is added directly (context message).
+    assert sink.add_direct(_datum(2, "no keyword here")) is True
+    sink.close()
+    assert sink.result.exported == 2
+    assert sink.result.scanned == 2

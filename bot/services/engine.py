@@ -149,6 +149,16 @@ class OutputSink:
         self.exported += 1
         return True
 
+    def add_direct(self, datum: MessageDatum) -> bool:
+        """Write a related/context message without keyword filtering (dedup only)."""
+        self.scanned += 1
+        if datum.id in self._seen:
+            return False
+        self._seen.add(datum.id)
+        self._write(datum)
+        self.exported += 1
+        return True
+
     def _write(self, datum: MessageDatum) -> None:
         assert self._handle is not None
         if self.fmt == "txt":

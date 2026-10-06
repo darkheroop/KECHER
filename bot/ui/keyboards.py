@@ -153,6 +153,9 @@ def scrape_panel(state: dict) -> InlineKeyboardMarkup:
                 _btn(_mark("JSON", state.get("format") == "json"), "scr:fmt:json"),
             ],
             [
+                _btn(_mark("Related ±1", bool(state.get("context", False))), "scr:ctx"),
+            ],
+            [
                 _btn(f"🚫 Exclude: {ex_label}"[:34], "scr:exclude"),
                 _btn(f"👤 Sender: {sender}"[:24], "scr:sender"),
             ],
@@ -216,6 +219,25 @@ def scrape_confirm() -> InlineKeyboardMarkup:
             [_btn(f"{Emoji.START} Start scraping", "scr:go")],
             [_btn(f"{Emoji.SETTINGS} Adjust settings", "scr:backpanel")],
             [_btn(f"{Emoji.CANCEL} Cancel", "scr:cancel")],
+        ]
+    )
+
+
+def scr_join_confirm() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_btn(f"{Emoji.START} Scrape everything", "scrjoin:all")],
+            [_btn(f"{Emoji.FIND} Scrape a keyword", "scrjoin:kw")],
+            [_btn(f"{Emoji.CANCEL} Cancel", "scrjoin:no")],
+        ]
+    )
+
+
+def scr_leave_prompt() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_btn("🚪 Leave the chat", "scrjoin:leave")],
+            [_btn(f"{Emoji.SUCCESS} Stay subscribed", "scrjoin:stay")],
         ]
     )
 

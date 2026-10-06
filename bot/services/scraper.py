@@ -57,6 +57,7 @@ class ScrapeOptions:
     types: set[str] | None = None  # e.g. {"text"} or {"photo", "document"}
     include_media: bool = False
     text_only: bool = True  # plain-text output (no [date] prefix) for cleaning
+    context: int = 0  # grab N related messages before/after each keyword match
 
     def all_keywords(self) -> list[str]:
         found = [k.strip() for k in (self.keywords or []) if k and k.strip()]
