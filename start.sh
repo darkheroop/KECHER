@@ -5,8 +5,9 @@ set -eu
 # its absolute getFile paths, removing Telegram cloud's 20/50 MB restrictions.
 if [ -n "${TELEGRAM_API_ID:-}" ] && [ -n "${TELEGRAM_API_HASH:-}" ]; then
   export TELEGRAM_LOCAL=1
-  export TELEGRAM_WORK_DIR="${TELEGRAM_WORK_DIR:-/data/telegram-bot-api}"
-  export TELEGRAM_TEMP_DIR="${TELEGRAM_TEMP_DIR:-/data/telegram-bot-api-tmp}"
+  export TELEGRAM_WORK_DIR=/data/telegram-bot-api
+  export TELEGRAM_TEMP_DIR=/data/telegram-bot-api-tmp
+  export TELEGRAM_HTTP_PORT=8081
   export TELEGRAM_API_BASE="${TELEGRAM_API_BASE:-http://127.0.0.1:8081}"
   export TELEGRAM_API_LOCAL_FILES=true
   mkdir -p "$TELEGRAM_WORK_DIR" "$TELEGRAM_TEMP_DIR"

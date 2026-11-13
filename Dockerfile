@@ -26,4 +26,5 @@ COPY . .
 
 RUN mkdir -p /app/var /data /data/telegram-bot-api /data/telegram-bot-api-tmp
 
+ENTRYPOINT []
 CMD ["sh", "/app/start.sh"]
