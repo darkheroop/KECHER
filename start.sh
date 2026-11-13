@@ -11,6 +11,7 @@ if [ -n "${TELEGRAM_API_ID:-}" ] && [ -n "${TELEGRAM_API_HASH:-}" ]; then
   export TELEGRAM_API_BASE="${TELEGRAM_API_BASE:-http://127.0.0.1:8081}"
   export TELEGRAM_API_LOCAL_FILES=true
   mkdir -p "$TELEGRAM_WORK_DIR" "$TELEGRAM_TEMP_DIR"
+  chown -R telegram-bot-api:telegram-bot-api "$TELEGRAM_WORK_DIR" "$TELEGRAM_TEMP_DIR"
   /docker-entrypoint.sh &
 
   attempt=0
