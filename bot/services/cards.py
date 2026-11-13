@@ -14,6 +14,8 @@ counts are validated (no calendar/range checks).
 from __future__ import annotations
 
 import re
+import sqlite3
+import tempfile
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +23,7 @@ from pathlib import Path
 from bot.services.luhn import luhn_valid
 
 ProgressFn = Callable[[int], None]
+MAX_SPLIT_PARTS = 50
 
 # serial(16) | date(2) | time(2 or 4) | invited(3 or 4)
 CARD_RE = re.compile(
@@ -215,41 +218,46 @@ def filter_cards(
     """
     report = FilterReport(keyword=value)
     needle = (value or "").strip()
-    lines = list(iter_lines(src))
-    collected: list[str] = []
-
-    if mode == "prefix":
-        for index, line in enumerate(lines, start=1):
-            serials = [card.serial for card in extract_cards(line)]
-            bare = SERIAL_RE.match(line)
-            if bare:
-                serials.append(bare.group(1))
-            if needle and any(serial.startswith(needle) for serial in serials):
-                collected.append(line.rstrip())
-                report.matches += 1
-            if on_progress:
-                on_progress(index)
-    else:
-        lowered = needle.casefold()
-        for index, line in enumerate(lines):
-            if lowered and lowered in line.casefold():
-                report.matches += 1
-                block: list[str] = []
-                cursor = index - 1
-                while cursor >= 0 and is_card_line(lines[cursor]):
-                    block.append(lines[cursor])
-                    cursor -= 1
-                collected.extend(reversed(block))
-            if on_progress:
-                on_progress(index + 1)
-
     handle = _open_write(Path(out))
     try:
-        for line in collected:
-            handle.write(line + "\n")
+        if mode == "prefix":
+            for index, line in enumerate(iter_lines(src), start=1):
+                serials = [card.serial for card in extract_cards(line)]
+                bare = SERIAL_RE.match(line)
+                if bare:
+                    serials.append(bare.group(1))
+                if needle and any(serial.startswith(needle) for serial in serials):
+                    handle.write(line.rstrip() + "\n")
+                    report.matches += 1
+                    report.lines += 1
+                if on_progress:
+                    on_progress(index)
+        else:
+            lowered = needle.casefold()
+            # A disk-backed spool keeps an arbitrarily large preceding card
+            # block without retaining the whole dataset in RAM.
+            with tempfile.TemporaryFile(
+                mode="w+", encoding=WRITE_ENCODING, newline="\n"
+            ) as block:
+                block_lines = 0
+                for index, line in enumerate(iter_lines(src), start=1):
+                    if is_card_line(line):
+                        block.write(line + "\n")
+                        block_lines += 1
+                    else:
+                        if lowered and lowered in line.casefold():
+                            report.matches += 1
+                            block.seek(0)
+                            for card_line in block:
+                                handle.write(card_line)
+                            report.lines += block_lines
+                        block.seek(0)
+                        block.truncate(0)
+                        block_lines = 0
+                    if on_progress:
+                        on_progress(index)
     finally:
         handle.close()
-    report.lines = len(collected)
     return report
 
 
@@ -265,32 +273,44 @@ def split_cards(
 ) -> SplitReport:
     if parts < 1:
         raise ValueError("Parts must be >= 1")
+    if parts > MAX_SPLIT_PARTS:
+        raise ValueError(f"Parts must be <= {MAX_SPLIT_PARTS}")
     source = Path(src)
     directory = Path(out_dir)
     directory.mkdir(parents=True, exist_ok=True)
     stem = source.stem
 
-    lines = list(iter_lines(source))
-    report = SplitReport(lines=len(lines))
-    if not lines:
+    total = count_lines(source)
+    report = SplitReport(lines=total)
+    if not total:
         target = directory / f"{stem}_1.txt"
         target.write_text("", encoding=WRITE_ENCODING)
         report.parts.append(target)
         return report
 
-    parts = min(parts, len(lines))
-    base, remainder = divmod(len(lines), parts)
-
-    cursor = 0
-    for index in range(parts):
-        size = base + (1 if index < remainder else 0)
-        chunk = lines[cursor : cursor + size]
-        cursor += size
-        target = directory / f"{stem}_{index + 1}.txt"
-        target.write_text("\n".join(chunk) + "\n", encoding=WRITE_ENCODING)
-        report.parts.append(target)
-        if on_progress:
-            on_progress(cursor)
+    parts = min(parts, total)
+    base, remainder = divmod(total, parts)
+    sizes = [base + (1 if index < remainder else 0) for index in range(parts)]
+    part_index = 0
+    written_in_part = 0
+    target = directory / f"{stem}_1.txt"
+    handle = _open_write(target)
+    report.parts.append(target)
+    try:
+        for cursor, line in enumerate(iter_lines(source), start=1):
+            handle.write(line + "\n")
+            written_in_part += 1
+            if written_in_part == sizes[part_index] and part_index + 1 < parts:
+                handle.close()
+                part_index += 1
+                written_in_part = 0
+                target = directory / f"{stem}_{part_index + 1}.txt"
+                handle = _open_write(target)
+                report.parts.append(target)
+            if on_progress:
+                on_progress(cursor)
+    finally:
+        handle.close()
     return report
 
 
@@ -301,21 +321,34 @@ def dedup_cards(
     src: str | Path, out: str | Path, *, on_progress: ProgressFn | None = None
 ) -> DedupReport:
     report = DedupReport()
-    seen: set[str] = set()
+    output = Path(out)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    index_path = output.with_name(f".{output.name}.dedup.sqlite3")
+    index_path.unlink(missing_ok=True)
+    database = sqlite3.connect(index_path)
+    database.execute("PRAGMA journal_mode=OFF")
+    database.execute("PRAGMA synchronous=OFF")
+    database.execute("CREATE TABLE seen (line TEXT PRIMARY KEY) WITHOUT ROWID")
     handle = _open_write(Path(out))
     try:
         for index, line in enumerate(iter_lines(src), start=1):
             report.total += 1
-            if line in seen:
+            inserted = database.execute(
+                "INSERT OR IGNORE INTO seen(line) VALUES (?)", (line,)
+            ).rowcount
+            if not inserted:
                 report.removed += 1
             else:
-                seen.add(line)
                 report.unique += 1
                 handle.write(line + "\n")
+            if index % 10_000 == 0:
+                database.commit()
             if on_progress:
                 on_progress(index)
     finally:
         handle.close()
+        database.close()
+        index_path.unlink(missing_ok=True)
     return report
 
 

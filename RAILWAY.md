@@ -62,7 +62,9 @@ Bot service → **Variables** → add:
 | `LOG_FILE` | `/data/logs/bot.log` |
 | `TELEGRAM_SESSION_DIR` | `/data/sessions` |
 | `TELEGRAM_ACCOUNTS_FILE` | `/data/telegram_accounts.json` |
-| `MAX_FILE_SIZE_MB` | `20` |
+| `MAX_FILE_SIZE_MB` | `60` |
+| `TELEGRAM_DOWNLOAD_TIMEOUT_SECONDS` | `600` |
+| `TELEGRAM_REQUEST_TIMEOUT_SECONDS` | `600` |
 | `RATE_LIMIT_PER_MINUTE` | `30` |
 | `WORKER_CONCURRENCY` | `4` |
 | `LOG_LEVEL` | `INFO` |
@@ -72,10 +74,19 @@ Bot service → **Variables** → add:
 Notes:
 - `${{Postgres.DATABASE_URL}}` is Railway's reference syntax. If you renamed
   the DB service, adjust it. The app auto-converts it to `postgresql+asyncpg://`.
-- `MAX_FILE_SIZE_MB=20`: the official Bot API caps bot downloads at 20 MB.
-  Larger files require a self-hosted local Bot API server.
+- `MAX_FILE_SIZE_MB=60` is the product policy. The bot automatically enforces
+  20 MB in cloud mode; true 60 MB requires the local API service below.
 - Optional: `CUSTOM_EMOJI_IDS`, `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`
   (only for `/scrape`).
+
+### True 60 MB mode
+
+Set `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` from https://my.telegram.org on
+the bot service. The Docker image starts Telegram's local Bot API inside the
+same container and automatically enables shared-file mode; no second Railway
+service or public port is needed. Before the first switch from Telegram's cloud
+Bot API, stop the old bot and call the Bot API `logOut` method once as required
+by Telegram's local-server migration.
 
 ---
 

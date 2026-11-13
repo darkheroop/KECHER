@@ -13,18 +13,19 @@ from aiogram.types import (
 
 logger = logging.getLogger(__name__)
 
-SHORT_DESCRIPTION = "Extract, validate, filter and organise card serial files."
+SHORT_DESCRIPTION = "Fast streamed TXT/CSV cleaning, validation, split and merge."
 
 DESCRIPTION = (
-    "Card File Bot — a professional toolkit for card serial files. "
-    "Reply to a .txt with a command to clean, validate, filter, split, "
-    "deduplicate or merge records."
+    "Card File Bot — a fast toolkit for large TXT/CSV datasets. Upload a file "
+    "to clean, validate, filter, split, deduplicate or merge records with "
+    "live progress and automatic cleanup."
 )
 
 PUBLIC_COMMANDS: list[BotCommand] = [
     BotCommand(command="start", description="Start / main menu"),
     BotCommand(command="menu", description="Open the menu"),
     BotCommand(command="help", description="How to use the bot"),
+    BotCommand(command="upload", description="Upload a TXT/CSV dataset"),
     BotCommand(command="clean", description="Extract valid card records"),
     BotCommand(command="live", description="Keep records that pass the Luhn check"),
     BotCommand(command="filter", description="Filter by series prefix or keyword"),

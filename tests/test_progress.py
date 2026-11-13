@@ -6,6 +6,7 @@ from bot.jobs.progress import (
     render_progress_bar,
     render_progress_text,
 )
+from bot.jobs.execution import run_with_progress
 
 
 @pytest.mark.parametrize(
@@ -67,3 +68,29 @@ async def test_reporter_inactive_without_message() -> None:
     reporter = ProgressReporter(NullNotifier(), chat_id=1, message_id=None)
     await reporter.update(50)
     assert reporter.active is False
+
+
+async def test_reporter_is_inactive_after_finish() -> None:
+    rec = _Recorder()
+    reporter = ProgressReporter(rec, chat_id=1, message_id=2, min_interval=0)
+    await reporter.finish("done")
+    await reporter.update(50, force=True)
+    assert reporter.active is False
+    assert len(rec.edits) == 1
+
+
+async def test_worker_progress_is_coalesced_to_percent_changes() -> None:
+    rec = _Recorder()
+    reporter = ProgressReporter(rec, chat_id=1, message_id=2, min_interval=0)
+
+    def busy(*, on_progress) -> int:  # noqa: ANN001
+        for index in range(1, 10_001):
+            on_progress(index)
+        return 10_000
+
+    result = await run_with_progress(
+        busy, reporter=reporter, total=10_000, detail="large.txt"
+    )
+    assert result == 10_000
+    assert 1 <= len(rec.edits) <= 100
+    assert "large.txt" in rec.edits[0][2]

@@ -20,6 +20,7 @@ works identically with or without Telegram Premium.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
@@ -103,6 +104,7 @@ _SPECS: dict[str, EmojiSpec] = {
 }
 
 _custom_ids: dict[str, str] = {}
+_CUSTOM_TAG_RE = re.compile(r'<tg-emoji\s+emoji-id="\d+">(.*?)</tg-emoji>')
 
 
 def configure_custom(ids: Mapping[str, str] | None) -> None:
@@ -134,6 +136,11 @@ def render(name: str) -> str:
     if custom_id and str(custom_id).isdigit():
         return f'<tg-emoji emoji-id="{custom_id}">{spec.unicode}</tg-emoji>'
     return spec.unicode
+
+
+def plain(text: object) -> str:
+    """Return keyboard-safe text by replacing HTML custom emoji with Unicode."""
+    return _CUSTOM_TAG_RE.sub(r"\1", str(text))
 
 
 class _Token:

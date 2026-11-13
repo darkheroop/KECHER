@@ -5,10 +5,11 @@ from __future__ import annotations
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from bot.db.enums import UIMode
-from bot.ui.emoji import Emoji
+from bot.ui.emoji import Emoji, plain
 
 def _btn(text: str, data: str) -> InlineKeyboardButton:
-    return InlineKeyboardButton(text=text, callback_data=data)
+    # Inline button labels are plain text and must never contain <tg-emoji> HTML.
+    return InlineKeyboardButton(text=plain(text), callback_data=data)
 
 
 def _mark(label: str, active: bool) -> str:
@@ -20,14 +21,16 @@ def main_menu() -> InlineKeyboardMarkup:
     from bot.config import get_settings
 
     contact = (get_settings().developer_contact or "").strip().lstrip("@")
+    limit = get_settings().effective_max_file_size_mb
     rows = [
+        [_btn(f"{Emoji.INBOX} Upload file · {limit} MB", "menu:upload")],
         [_btn(f"{Emoji.SCRAPE} Scrape", "menu:scrape"), _btn(f"{Emoji.CLEAN} Clean", "menu:clean")],
         [_btn(f"{Emoji.LIVE_CHECK} Live Check", "menu:live"), _btn(f"{Emoji.COUNTRY} Country", "menu:filter")],
         [_btn(f"{Emoji.SPLIT} Split", "menu:split"), _btn(f"{Emoji.RECYCLE} Dedup", "menu:dedup")],
         [_btn(f"{Emoji.PAGE} Add File", "menu:addfile"), _btn(f"{Emoji.MERGE} Merge", "menu:merge")],
         [_btn(f"{Emoji.FIND} Find BIN", "menu:findbin")],
         [_btn(f"{Emoji.SPECIALS} SPECIALS", "spec:open")],
-        [_btn(f"{Emoji.SETTINGS} Settings", "settings:open")],
+        [_btn(f"{Emoji.HELP} Help", "menu:help"), _btn(f"{Emoji.SETTINGS} Settings", "settings:open")],
     ]
     if contact:
         rows.append(
@@ -64,8 +67,8 @@ def card_actions(file_id: int) -> InlineKeyboardMarkup:
         inline_keyboard=[
             [_btn(f"{Emoji.CLEAN} Clean", f"card:clean:{file_id}"), _btn(f"{Emoji.LIVE_CHECK} Live", f"card:live:{file_id}")],
             [_btn(f"{Emoji.FIND} Filter", f"card:filter:{file_id}"), _btn(f"{Emoji.SPLIT} Split", f"card:split:{file_id}")],
-            [_btn(f"{Emoji.RECYCLE} Dedup", f"card:dedup:{file_id}"), _btn(f"{Emoji.PAGE} Add File", f"card:addfile:{file_id}")],
-            [_btn(f"{Emoji.CANCEL} Cancel", f"card:cancel:{file_id}")],
+            [_btn(f"{Emoji.RECYCLE} Dedup", f"card:dedup:{file_id}"), _btn(f"{Emoji.PAGE} Add to Merge", f"card:addfile:{file_id}")],
+            [_btn(f"{Emoji.DELETE} Delete file", f"card:cancel:{file_id}")],
         ]
     )
 

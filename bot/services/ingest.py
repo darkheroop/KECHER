@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -11,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bot.config import Settings
 from bot.db.models import User, UserFile
 from bot.db.repositories import create_file
-from bot.security.limits import LimitExceeded
+from bot.security.limits import LimitExceeded, check_ingest_size
 from bot.services.file_manager import FileManager
 from bot.services.filetypes import is_ingestible
 
@@ -44,6 +45,7 @@ async def ingest_document(
         raise IngestError(f"Unsupported file type: {Path(file_name).suffix or '(none)'}")
 
     try:
+        check_ingest_size(file_size or 0, settings)
         files.check_capacity(user.telegram_id, file_size or 0)
     except LimitExceeded as exc:
         raise IngestError(str(exc)) from exc
@@ -51,24 +53,55 @@ async def ingest_document(
     allocated = files.allocate(user.telegram_id, file_name)
     try:
         await download(file_id, allocated.path)
-    except Exception as exc:  # noqa: BLE001 - surface a clean error to the user
+    except BaseException as exc:  # cleanup also matters when a task is cancelled
         try:
             allocated.path.unlink(missing_ok=True)
         except OSError:  # pragma: no cover - best effort
             pass
-        raise IngestError("Could not download the file from Telegram") from exc
+        if isinstance(exc, asyncio.CancelledError):
+            raise
+        hint = (
+            " Check the local Bot API connection."
+            if settings.local_bot_api_enabled
+            else " Telegram cloud mode only downloads files up to 20 MB."
+        )
+        raise IngestError("Could not download the file from Telegram." + hint) from exc
 
-    stored = files.finalize(allocated)
+    try:
+        check_ingest_size(allocated.path.stat().st_size, settings)
+        files.check_stored_capacity(user.telegram_id, allocated.path)
+        stored = await asyncio.to_thread(files.finalize, allocated)
+    except BaseException as exc:
+        try:
+            allocated.path.unlink(missing_ok=True)
+        except OSError:  # pragma: no cover - best effort
+            pass
+        if isinstance(exc, asyncio.CancelledError):
+            raise
+        raise IngestError(str(exc)) from exc
     expires_at = datetime.now(UTC) + timedelta(minutes=max(1, ttl_minutes))
 
-    return await create_file(
-        session,
-        user_id=user.id,
-        original_name=file_name,
-        safe_name=stored.safe_name,
-        rel_path=stored.rel_path,
-        size_bytes=stored.size_bytes,
-        telegram_file_id=file_id,
-        sha256=stored.sha256,
-        expires_at=expires_at,
-    )
+    try:
+        record = await create_file(
+            session,
+            user_id=user.id,
+            original_name=file_name,
+            safe_name=stored.safe_name,
+            rel_path=stored.rel_path,
+            size_bytes=stored.size_bytes,
+            telegram_file_id=file_id,
+            sha256=stored.sha256,
+            expires_at=expires_at,
+        )
+        # Commit here so a later session-scope commit failure cannot orphan the
+        # downloaded file outside retention tracking.
+        await session.commit()
+        return record
+    except BaseException as exc:  # metadata and file must succeed or fail together
+        try:
+            allocated.path.unlink(missing_ok=True)
+        except OSError:  # pragma: no cover - best effort
+            pass
+        if isinstance(exc, asyncio.CancelledError):
+            raise
+        raise IngestError("Could not register the uploaded file") from exc

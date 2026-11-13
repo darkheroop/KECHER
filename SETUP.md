@@ -86,7 +86,7 @@ BOT_TOKEN=PASTE_YOUR_TOKEN_HERE
 ENVIRONMENT=development
 DATABASE_URL=sqlite+aiosqlite:///./var/app.db
 STORAGE_ROOT=./var/storage
-MAX_FILE_SIZE_MB=20
+MAX_FILE_SIZE_MB=60
 LOG_LEVEL=INFO
 ```
 
@@ -115,7 +115,7 @@ On a server you would instead run `alembic upgrade head` and use PostgreSQL.
 | `Unauthorized` in logs | Wrong/expired `BOT_TOKEN`. Re-copy from @BotFather and update `.env`. |
 | Bot does nothing | Make sure the `run.ps1` window is still open (that is the bot process). |
 | `.doc` fails | Install LibreOffice, or convert to `.docx` first (`/doc2txt` handles `.docx` without it). |
-| Files over 20 MB rejected | Official Bot API limit. A self-hosted local Bot API server lifts it. |
+| Files over 20 MB rejected | Cloud mode is capped at 20 MB. Set `TELEGRAM_API_ID` and `TELEGRAM_API_HASH`; the Docker image then starts its bundled local Bot API for true 60 MB mode. |
 | Wrong chat replies | Only one bot instance should run per token. Close other windows. |
 
 ---

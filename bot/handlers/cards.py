@@ -44,6 +44,7 @@ from bot.services.cards import (
     dedup_cards,
     filter_cards,
     live_cards,
+    MAX_SPLIT_PARTS,
     merge_files,
     split_cards,
 )
@@ -56,6 +57,7 @@ from bot.ui.keyboards import card_actions, clear_queue_confirm, split_choices
 from bot.ui.render import safe_edit
 
 router = Router(name="cards")
+_active_card_jobs: set[tuple[int, int]] = set()
 
 HELP_BY_COMMAND = {
     "clean": "🧹 Receive the valid card records only.",
@@ -82,6 +84,21 @@ async def _forwarding_enabled() -> bool:
         return (await get_bot_setting(session, "forward_enabled", "false")) == "true"
 
 
+async def _download_document(
+    message: Message, settings: Settings, file_id: str, path: Path
+) -> None:
+    await message.bot.download(
+        file_id,
+        destination=path,
+        timeout=max(30, settings.telegram_download_timeout_seconds),
+        chunk_size=max(64, settings.telegram_download_chunk_kb) * 1024,
+    )
+
+
+def _file_detail(name: str) -> str:
+    return f"{Emoji.PAGE} <code>{html.escape(name)}</code>"
+
+
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
@@ -100,8 +117,14 @@ async def _ingest_reply(
         await message.answer(f"{Emoji.ERROR} Please reply to a <b>.txt</b> file.")
         return None
 
+    status = await message.answer(
+        f"{Emoji.INBOX} <b>Importing file</b>\n\n"
+        f"{Emoji.PAGE} <code>{html.escape(document.file_name or 'cards.txt')}</code>\n"
+        f"{Emoji.DOWNLOAD} Downloading and verifying…"
+    )
+
     async def download(file_id: str, path: Path) -> None:
-        await message.bot.download(file_id, destination=path)
+        await _download_document(message, settings, file_id, path)
 
     try:
         async with session_scope() as session:
@@ -119,8 +142,14 @@ async def _ingest_reply(
                 ttl_minutes=user_settings.cleanup_minutes,
             )
     except IngestError as exc:
-        await message.answer(f"{Emoji.ERROR} {exc}")
+        await safe_edit(status, f"{Emoji.ERROR} <b>Import failed</b>\n\n{html.escape(str(exc))}")
         return None
+
+    await safe_edit(
+        status,
+        f"{Emoji.SUCCESS} <b>File imported</b> · {human_size(record.size_bytes)}\n"
+        f"{_file_detail(record.safe_name)}",
+    )
 
     if settings.forward_uploads and await _forwarding_enabled():
         await forward_to_channel(message.bot, settings, reply.chat.id, reply.message_id)
@@ -153,10 +182,12 @@ async def _send_file(message: Message, path: Path, filename: str, caption: str) 
             "ℹ️ No matching card data was found in that file, so there is nothing to send."
         )
         return
-    sent = await message.answer_document(
-        FSInputFile(path, filename=_tag(filename)), caption=caption
-    )
     settings = get_settings()
+    sent = await message.answer_document(
+        FSInputFile(path, filename=_tag(filename), chunk_size=1024 * 1024),
+        caption=caption,
+        request_timeout=max(60, settings.telegram_request_timeout_seconds),
+    )
     if settings.forward_results and await _forwarding_enabled():
         await forward_to_channel(message.bot, settings, sent.chat.id, sent.message_id)
 
@@ -230,7 +261,7 @@ async def _run_clean(
     message: Message, files: FileManager, settings: Settings, record: UserFile, telegram_id: int
 ) -> None:
     src = _resolve(record, files, telegram_id)
-    total = count_lines(src)
+    total = await asyncio.to_thread(count_lines, src)
     status = await message.answer(
         f"{Emoji.CLEAN} Cleaning <b>{total:,}</b> line(s)…"
     )
@@ -244,8 +275,9 @@ async def _run_clean(
         reporter=_reporter(message, status),
         total=max(1, total),
         label="Cleaning",
+        detail=_file_detail(record.safe_name),
     )
-    stored = files.finalize(out)
+    stored = await asyncio.to_thread(files.finalize, out)
     async with session_scope() as session:
         user_settings = await get_user_settings(session, record.user_id)
     await _register_output(record, files, stored, user_settings.cleanup_minutes)
@@ -258,7 +290,7 @@ async def _run_clean(
         message,
         stored.path,
         stored.safe_name,
-        f"🧹 {record.safe_name}\n{report.valid:,} valid · {report.invalid:,} removed · "
+        f"🧹 {html.escape(record.safe_name)}\n{report.valid:,} valid · {report.invalid:,} removed · "
         f"{human_size(stored.size_bytes)}",
     )
 
@@ -267,7 +299,7 @@ async def _run_live(
     message: Message, files: FileManager, settings: Settings, record: UserFile, telegram_id: int
 ) -> None:
     src = _resolve(record, files, telegram_id)
-    total = count_lines(src)
+    total = await asyncio.to_thread(count_lines, src)
     status = await message.answer(
         f"{Emoji.LIVE_CHECK} Checking <b>{total:,}</b> line(s) with Luhn…"
     )
@@ -281,8 +313,9 @@ async def _run_live(
         reporter=_reporter(message, status),
         total=max(1, total),
         label="Checking",
+        detail=_file_detail(record.safe_name),
     )
-    stored = files.finalize(out)
+    stored = await asyncio.to_thread(files.finalize, out)
     async with session_scope() as session:
         user_settings = await get_user_settings(session, record.user_id)
     await _register_output(record, files, stored, user_settings.cleanup_minutes)
@@ -295,7 +328,7 @@ async def _run_live(
         message,
         stored.path,
         stored.safe_name,
-        f"🕵️ {record.safe_name}\n{report.valid:,} valid · {report.invalid:,} invalid · "
+        f"🕵️ {html.escape(record.safe_name)}\n{report.valid:,} valid · {report.invalid:,} invalid · "
         f"{human_size(stored.size_bytes)}",
     )
 
@@ -304,7 +337,7 @@ async def _run_dedup(
     message: Message, files: FileManager, settings: Settings, record: UserFile, telegram_id: int
 ) -> None:
     src = _resolve(record, files, telegram_id)
-    total = count_lines(src)
+    total = await asyncio.to_thread(count_lines, src)
     status = await message.answer(
         f"{Emoji.RECYCLE} Deduplicating <b>{total:,}</b> line(s)…"
     )
@@ -318,8 +351,9 @@ async def _run_dedup(
         reporter=_reporter(message, status),
         total=max(1, total),
         label="Deduplicating",
+        detail=_file_detail(record.safe_name),
     )
-    stored = files.finalize(out)
+    stored = await asyncio.to_thread(files.finalize, out)
     async with session_scope() as session:
         user_settings = await get_user_settings(session, record.user_id)
     await _register_output(record, files, stored, user_settings.cleanup_minutes)
@@ -332,7 +366,7 @@ async def _run_dedup(
         message,
         stored.path,
         stored.safe_name,
-        f"♻️ {record.safe_name}\n{report.unique:,} unique · {report.removed:,} removed · "
+        f"♻️ {html.escape(record.safe_name)}\n{report.unique:,} unique · {report.removed:,} removed · "
         f"{human_size(stored.size_bytes)}",
     )
 
@@ -397,7 +431,7 @@ async def _run_filter(
     telegram_id: int,
 ) -> None:
     src = _resolve(record, files, telegram_id)
-    total = count_lines(src)
+    total = await asyncio.to_thread(count_lines, src)
     label = "Series" if mode == "prefix" else "Keyword"
     status = await message.answer(
         f"{Emoji.FIND} Filtering <b>{total:,}</b> line(s) by {label.lower()} "
@@ -414,10 +448,11 @@ async def _run_filter(
         reporter=_reporter(message, status),
         total=max(1, total),
         label="Filtering",
+        detail=_file_detail(record.safe_name),
         mode=mode,
     )
     # filter_cards signature: (src, out, value, *, mode)
-    stored = files.finalize(out)
+    stored = await asyncio.to_thread(files.finalize, out)
     async with session_scope() as session:
         user_settings = await get_user_settings(session, record.user_id)
     await _register_output(record, files, stored, user_settings.cleanup_minutes)
@@ -430,7 +465,7 @@ async def _run_filter(
         message,
         stored.path,
         stored.safe_name,
-        f"🎯 {record.safe_name}\n{label} “{value}” · {report.lines:,} line(s) · "
+        f"🎯 {html.escape(record.safe_name)}\n{label} “{html.escape(value)}” · {report.lines:,} line(s) · "
         f"{human_size(stored.size_bytes)}",
     )
 
@@ -474,6 +509,11 @@ async def cmd_split(message: Message, file_manager: FileManager, settings: Setti
         return
 
     count = int(parts[1])
+    if count > MAX_SPLIT_PARTS:
+        await message.answer(
+            f"{Emoji.WARNING} Choose between 1 and {MAX_SPLIT_PARTS} parts."
+        )
+        return
     record = await _ingest_reply(message, file_manager, settings)
     if record is None:
         await _prompt_reply(message, "split")
@@ -490,7 +530,7 @@ async def _run_split(
     telegram_id: int,
 ) -> None:
     src = _resolve(record, files, telegram_id)
-    total = count_lines(src)
+    total = await asyncio.to_thread(count_lines, src)
     status = await message.answer(
         f"{Emoji.SPLIT} Splitting <b>{total:,}</b> line(s) into <b>{count}</b> part(s)…"
     )
@@ -503,6 +543,7 @@ async def _run_split(
         reporter=_reporter(message, status),
         total=max(1, total),
         label="Splitting",
+        detail=_file_detail(record.safe_name),
     )
     parts = report.parts
     await safe_edit(
@@ -514,18 +555,25 @@ async def _run_split(
     sent = 0
     for index, part in enumerate(parts, start=1):
         if not part.exists() or part.stat().st_size == 0:
+            part.unlink(missing_ok=True)
             continue
-        lines = count_lines(part)
+        lines = await asyncio.to_thread(count_lines, part)
         size = human_size(part.stat().st_size)
         delivered = await message.answer_document(
-            FSInputFile(part, filename=_tag(names[index - 1])),
+            FSInputFile(part, filename=_tag(names[index - 1]), chunk_size=1024 * 1024),
             caption=f"✂️ Part {index} of {len(parts)} · {lines:,} lines · {size}",
+            request_timeout=max(60, settings.telegram_request_timeout_seconds),
         )
         if forward:
             await forward_to_channel(
                 message.bot, get_settings(), delivered.chat.id, delivered.message_id
             )
         sent += 1
+        part.unlink(missing_ok=True)
+    try:
+        out_dir.rmdir()
+    except OSError:
+        pass
     if sent == 0:
         await message.answer("ℹ️ The file had no lines to split.")
 
@@ -549,7 +597,9 @@ async def _run_merge(message: Message, files: FileManager, tg_user, telegram_id:
         return
 
     paths = [files.resolve(telegram_id, r.rel_path, create_parent=False) for r in records]
-    total = sum(count_lines(p) for p in paths if p.is_file())
+    total = await asyncio.to_thread(
+        lambda: sum(count_lines(p) for p in paths if p.is_file())
+    )
     out = files.allocate(
         telegram_id, await naming.output_name(telegram_id, "merged"), subdir="out"
     )
@@ -563,13 +613,16 @@ async def _run_merge(message: Message, files: FileManager, tg_user, telegram_id:
         reporter=_reporter(message, status),
         total=max(1, total),
         label="Merging",
+        detail=f"{Emoji.PAGE} <b>{len(records)}</b> files",
     )
-    stored = files.finalize(out)
+    stored = await asyncio.to_thread(files.finalize, out)
 
     async with session_scope() as session:
         for record in records:
             await delete_file_row(session, record.id)
         await clear_queue(session, user.id)
+    for record in records:
+        files.delete(telegram_id, record.rel_path)
 
     await _register_output(records[0], files, stored, user_settings.cleanup_minutes)
     await safe_edit(
@@ -621,11 +674,23 @@ async def on_clear_queue(callback: CallbackQuery, file_manager: FileManager) -> 
 async def on_document(message: Message, file_manager: FileManager, settings: Settings) -> None:
     document = message.document
     if not _is_txt(document.file_name):
-        await message.answer(f"{Emoji.ERROR} Please send a <b>.txt</b> file.")
+        await message.answer(
+            f"{Emoji.ERROR} Please send a <b>TXT, CSV, TSV, LOG, DAT or LIST</b> file."
+        )
         return
 
+    display_name = document.file_name or "cards.txt"
+    display_size = human_size(document.file_size) if document.file_size is not None else "Checking…"
+    status = await message.answer(
+        f"{Emoji.INBOX} <b>Importing dataset</b>\n"
+        "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
+        f"{Emoji.PAGE} <code>{html.escape(display_name)}</code>\n"
+        f"💾 {display_size}\n\n"
+        f"{Emoji.DOWNLOAD} <i>Streaming from Telegram and verifying…</i>"
+    )
+
     async def download(file_id: str, path: Path) -> None:
-        await message.bot.download(file_id, destination=path)
+        await _download_document(message, settings, file_id, path)
 
     try:
         async with session_scope() as session:
@@ -643,17 +708,25 @@ async def on_document(message: Message, file_manager: FileManager, settings: Set
                 ttl_minutes=user_settings.cleanup_minutes,
             )
     except IngestError as exc:
-        await message.answer(f"{Emoji.ERROR} {exc}")
+        await safe_edit(
+            status,
+            f"{Emoji.ERROR} <b>Import failed</b>\n"
+            "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
+            f"{html.escape(str(exc))}",
+        )
         return
 
     if settings.forward_uploads and await _forwarding_enabled():
         await forward_to_channel(message.bot, settings, message.chat.id, message.message_id)
 
-    await message.answer(
-        f"{Emoji.CARD} <b>File received</b>\n\n"
-        f"Name: <code>{html.escape(record.safe_name)}</code>\n"
-        f"Size: {record.size_bytes:,} bytes\n\n"
-        "What would you like to do?",
+    await safe_edit(
+        status,
+        f"{Emoji.CARD} <b>Dataset ready</b>\n"
+        "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
+        f"{Emoji.PAGE} <code>{html.escape(record.safe_name)}</code>\n"
+        f"💾 {human_size(record.size_bytes)}\n"
+        f"{Emoji.CLOCK} Auto-delete · <b>{user_settings.cleanup_minutes} min</b>\n\n"
+        "Choose a tool:",
         reply_markup=card_actions(record.id),
     )
 
@@ -706,27 +779,39 @@ async def on_card_action(
         await callback.answer()
         return
 
-    if action == "clean":
-        await _run_clean(callback.message, file_manager, settings, record, telegram_id)
-    elif action == "live":
-        await _run_live(callback.message, file_manager, settings, record, telegram_id)
-    elif action == "dedup":
-        await _run_dedup(callback.message, file_manager, settings, record, telegram_id)
-    elif action == "addfile":
-        await _run_addfile(callback.message, record, callback.from_user)
-    elif action == "filter":
-        await callback.message.answer(
-            f"{Emoji.FIND} <b>Filter</b> — reply to the file with:\n"
-            "• <code>/filter 123456</code> (series prefix)\n"
-            "• <code>/filter canada</code> (keyword above)"
-        )
-    elif action == "split":
-        await callback.message.answer(
-            "Choose how many parts:", reply_markup=split_choices(record.id)
-        )
-    elif action == "splitn" and count is not None:
-        await _run_split(callback.message, file_manager, settings, record, count, telegram_id)
-    await callback.answer()
+    long_action = action in {"clean", "live", "dedup", "splitn"}
+    job_key = (telegram_id, record.id)
+    if long_action and job_key in _active_card_jobs:
+        await callback.answer("This file is already processing.", show_alert=True)
+        return
+    if long_action:
+        _active_card_jobs.add(job_key)
+    await callback.answer("Starting…" if long_action else None)
+
+    try:
+        if action == "clean":
+            await _run_clean(callback.message, file_manager, settings, record, telegram_id)
+        elif action == "live":
+            await _run_live(callback.message, file_manager, settings, record, telegram_id)
+        elif action == "dedup":
+            await _run_dedup(callback.message, file_manager, settings, record, telegram_id)
+        elif action == "addfile":
+            await _run_addfile(callback.message, record, callback.from_user)
+        elif action == "filter":
+            await callback.message.answer(
+                f"{Emoji.FIND} <b>Filter</b> — reply to the file with:\n"
+                "• <code>/filter 123456</code> (series prefix)\n"
+                "• <code>/filter canada</code> (keyword above)"
+            )
+        elif action == "split":
+            await callback.message.answer(
+                "Choose how many parts:", reply_markup=split_choices(record.id)
+            )
+        elif action == "splitn" and count is not None:
+            await _run_split(callback.message, file_manager, settings, record, count, telegram_id)
+    finally:
+        if long_action:
+            _active_card_jobs.discard(job_key)
 
 
 @router.callback_query()

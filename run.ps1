@@ -110,7 +110,7 @@ if (-not (Test-Path -LiteralPath $envFile)) {
         "ENVIRONMENT=development",
         "DATABASE_URL=sqlite+aiosqlite:///./var/app.db",
         "STORAGE_ROOT=./var/storage",
-        "MAX_FILE_SIZE_MB=20",
+        "MAX_FILE_SIZE_MB=60",
         "LOG_LEVEL=INFO"
     )
 }

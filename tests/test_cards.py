@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from bot.services.cards import (
     Card,
     clean_cards,
@@ -145,6 +147,13 @@ def test_split_cards_more_parts_than_lines(tmp_path: Path) -> None:
     src.write_text(f"{VALID_A}\n", encoding="utf-8")
     report = split_cards(src, tmp_path / "parts", 5)
     assert len(report.parts) == 1
+
+
+def test_split_cards_caps_part_count(tmp_path: Path) -> None:
+    src = tmp_path / "in.txt"
+    src.write_text(f"{VALID_A}\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="<= 50"):
+        split_cards(src, tmp_path / "parts", 51)
 
 
 def test_dedup_cards(tmp_path: Path) -> None:

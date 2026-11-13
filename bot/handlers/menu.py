@@ -18,49 +18,39 @@ from bot.security.access import is_admin
 from bot.services.file_manager import FileManager
 from bot.ui.emoji import Emoji
 from bot.ui.i18n import markdown_to_html, tr
-from bot.ui.keyboards import main_menu, settings_menu
+from bot.ui.keyboards import back_to_menu, main_menu, settings_menu
 from bot.ui.render import safe_edit
 
 router = Router(name="menu")
 
-HEADER = f"{Emoji.CARD} <b>Card File Bot</b>"
 DIVIDER = "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄"
 
-HELP_TEXT = (
-    f"{HEADER}\n{DIVIDER}\n"
-    "<b>Reply to a .txt</b>\n"
-    f"{Emoji.CLEAN} <code>/clean</code>  valid records\n"
-    f"{Emoji.LIVE_CHECK} <code>/live</code>  Luhn-valid\n"
-    f"{Emoji.FIND} <code>/filter 123456</code>  a series\n"
-    f"{Emoji.FIND} <code>/filter canada</code>  a keyword\n"
-    f"{Emoji.SPLIT} <code>/split N</code>   {Emoji.RECYCLE} <code>/dedup</code>\n"
-    f"{Emoji.PAGE} <code>/addfile</code> → {Emoji.STAR} <code>/merge</code>\n\n"
-    f"{Emoji.SETTINGS} <code>/settings</code>   {Emoji.ADMIN} <code>/admin</code>\n\n"
-    f"<i>Record:</i> <code>serial|date|time|count</code>"
-)
 
-TEXT_GUIDE = (
-    f"{HEADER}\n{DIVIDER}\n"
-    "<b>Commands</b>\n"
-    f"{Emoji.CLEAN} <code>/clean</code> — clean card lines\n"
-    f"{Emoji.LIVE_CHECK} <code>/live</code> — Luhn validation\n"
-    f"{Emoji.FIND} <code>/filter 123456</code> — a series\n"
-    f"<code>/filter canada</code> — a keyword\n"
-    f"{Emoji.FIND} <code>/findbin 411111</code> — filter by BIN\n"
-    f"{Emoji.SPLIT} <code>/split N</code> — split a file\n"
-    f"{Emoji.RECYCLE} <code>/dedup</code> — remove duplicates\n"
-    f"{Emoji.PAGE} <code>/addfile</code> — add to merge queue\n"
-    f"{Emoji.MERGE} <code>/merge</code> — merge queued files\n"
-    f"<code>/clearqueue</code> — clear merge queue\n\n"
-    f"{Emoji.SCRAPE} <code>/scrape</code> — scrape a group/channel\n"
-    f"{Emoji.LOGIN} <code>/plogin</code> — connect a private account\n"
-    f"{Emoji.ACCOUNT} <code>/myaccounts</code> — list accounts\n\n"
-    f"{Emoji.SPECIALS} <code>/specials</code> — clone · messages → .txt\n"
-    f"{Emoji.FORWARD} <code>/totxt</code> — forward messages into a .txt\n\n"
-    f"{Emoji.SETTINGS} <code>/settings</code> — change UI mode\n"
-    f"{Emoji.ADMIN} <code>/admin</code> — admin panel\n\n"
-    "⚠️ Reply to a .txt file when using file commands."
-)
+def _header() -> str:
+    # Render lazily so premium emoji configured during startup are applied.
+    return f"{Emoji.CARD} <b>Card File Bot</b>"
+
+
+def text_guide() -> str:
+    return (
+        f"{_header()}\n{DIVIDER}\n"
+        f"{Emoji.INBOX} Send a TXT/CSV dataset, then choose a tool.\n\n"
+        "<b>Commands</b>\n"
+        f"{Emoji.CLEAN} <code>/clean</code> — clean card lines\n"
+        f"{Emoji.LIVE_CHECK} <code>/live</code> — Luhn validation\n"
+        f"{Emoji.FIND} <code>/filter 123456</code> — a series\n"
+        f"<code>/filter canada</code> — a keyword\n"
+        f"{Emoji.FIND} <code>/findbin 411111</code> — filter by BIN\n"
+        f"{Emoji.SPLIT} <code>/split N</code> — split a file\n"
+        f"{Emoji.RECYCLE} <code>/dedup</code> — remove duplicates\n"
+        f"{Emoji.PAGE} <code>/addfile</code> — add to merge queue\n"
+        f"{Emoji.MERGE} <code>/merge</code> — merge queued files\n\n"
+        f"{Emoji.SCRAPE} <code>/scrape</code> — scrape a group/channel\n"
+        f"{Emoji.SCRAPE} <code>/scr LINK 200</code> — join and scrape\n"
+        f"{Emoji.SPECIALS} <code>/specials</code> — clone · messages → .txt\n\n"
+        f"{Emoji.SETTINGS} <code>/settings</code> — preferences\n"
+        f"{Emoji.ADMIN} <code>/admin</code> — admin panel"
+    )
 
 MENU_INSTRUCTIONS = {
     "clean": "Reply to a .txt with <code>/clean</code>.",
@@ -80,20 +70,30 @@ COMING_SOON = {
 def welcome_text(lang: str = "en") -> str:
     from bot.config import get_settings
 
-    contact = get_settings().developer_contact
+    settings = get_settings()
+    contact = settings.developer_contact
     return (
-        f"{HEADER}\n{DIVIDER}\n"
+        f"{_header()}\n{DIVIDER}\n"
         f"<i>{markdown_to_html(tr(lang, 'tagline'))}</i>\n\n"
         f"{markdown_to_html(tr(lang, 'welcome'))}\n\n"
+        f"{Emoji.INBOX} TXT/CSV · up to <b>{settings.effective_max_file_size_mb} MB</b> · streamed\n\n"
         f"<b>{markdown_to_html(tr(lang, 'developer', name=contact))}</b>"
     )
 
 
 def help_text(lang: str = "en") -> str:
+    from bot.config import get_settings
+
+    settings = get_settings()
+    transport = "local transport" if settings.local_bot_api_enabled else "cloud transport"
+    mode = f"{settings.effective_max_file_size_mb} MB {transport}"
     return (
-        f"{HEADER}\n{DIVIDER}\n"
+        f"{_header()}\n{DIVIDER}\n"
         f"<b>{tr(lang, 'help_title')}</b>\n"
         f"{markdown_to_html(tr(lang, 'help_lines'))}\n\n"
+        f"{Emoji.INBOX} <b>{mode}</b>\n"
+        "TXT · CSV · TSV · LOG · DAT · LIST\n"
+        f"{Emoji.PROGRESS} Streamed processing with live progress\n\n"
         f"{Emoji.SETTINGS} <code>/settings</code>"
     )
 
@@ -101,16 +101,16 @@ def help_text(lang: str = "en") -> str:
 def onboarding_text(name: str | None) -> str:
     who = f", <b>{html.escape(name)}</b>" if name else ""
     return (
-        f"{HEADER}\n{DIVIDER}\n"
+        f"{_header()}\n{DIVIDER}\n"
         f"Welcome{who} 👋\n\n"
-        f"{Emoji.PAGE} Send a <b>.txt</b> (or reply to one), then:\n\n"
+        f"{Emoji.PAGE} Send a <b>TXT/CSV</b> dataset (or reply to one), then:\n\n"
         f"{Emoji.CLEAN} <code>/clean</code> — valid records\n"
-    f"{Emoji.LIVE_CHECK} <code>/live</code> — Luhn-valid\n"
-    f"{Emoji.FIND} <code>/filter 123456</code> — a series\n"
-    f"{Emoji.FIND} <code>/filter canada</code> — a keyword\n"
-    f"{Emoji.SPLIT} <code>/split 5</code>   {Emoji.RECYCLE} <code>/dedup</code>\n"
-    f"{Emoji.PAGE} <code>/addfile</code> → {Emoji.STAR} <code>/merge</code>\n\n"
-    f"{Emoji.SPECIALS} <code>/specials</code> — clone · <code>/totxt</code>\n\n"
+        f"{Emoji.LIVE_CHECK} <code>/live</code> — Luhn-valid\n"
+        f"{Emoji.FIND} <code>/filter 123456</code> — a series\n"
+        f"{Emoji.FIND} <code>/filter canada</code> — a keyword\n"
+        f"{Emoji.SPLIT} <code>/split 5</code>   {Emoji.RECYCLE} <code>/dedup</code>\n"
+        f"{Emoji.PAGE} <code>/addfile</code> → {Emoji.STAR} <code>/merge</code>\n\n"
+        f"{Emoji.SPECIALS} <code>/specials</code> — clone · <code>/totxt</code>\n\n"
         f"{Emoji.KEY} <code>/redeem KEY</code> or /request\n"
         f"<i>Record:</i> <code>serial|date|time|count</code>"
     )
@@ -162,8 +162,9 @@ async def handle_start(message: Message, settings: Settings) -> None:
     if _is_button_mode(settings_row.ui_mode):
         await message.answer(first_time, reply_markup=main_menu())
     else:
+        guide = text_guide()
         await message.answer(
-            (onboarding_text(tg_user.first_name) + "\n\n" + TEXT_GUIDE) if created else TEXT_GUIDE
+            (onboarding_text(tg_user.first_name) + "\n\n" + guide) if created else guide
         )
 
 
@@ -200,13 +201,44 @@ async def handle_menu(message: Message, settings: Settings) -> None:
 @router.message(Command("help"))
 async def handle_help(message: Message) -> None:
     lang = await _language(message)
-    await message.answer(help_text(lang))
+    await message.answer(help_text(lang), reply_markup=back_to_menu())
+
+
+@router.message(Command("upload"))
+async def handle_upload(message: Message, settings: Settings) -> None:
+    await message.answer(
+        f"{Emoji.INBOX} <b>Send your dataset</b>\n{DIVIDER}\n"
+        f"Attach a TXT, CSV, TSV, LOG, DAT or LIST file up to "
+        f"<b>{settings.effective_max_file_size_mb} MB</b>.\n\n"
+        f"{Emoji.PROGRESS} It is streamed to disk, verified, then the tool menu opens.",
+        reply_markup=back_to_menu(),
+    )
 
 
 @router.callback_query(F.data == "menu:home")
 async def menu_home(callback: CallbackQuery, settings: Settings) -> None:
     lang = await _language(callback)
     await safe_edit(callback.message, welcome_text(lang), reply_markup=main_menu())
+    await callback.answer()
+
+
+@router.callback_query(F.data == "menu:upload")
+async def menu_upload(callback: CallbackQuery, settings: Settings) -> None:
+    await safe_edit(
+        callback.message,
+        f"{Emoji.INBOX} <b>Send your dataset</b>\n{DIVIDER}\n"
+        f"Attach a TXT, CSV, TSV, LOG, DAT or LIST file up to "
+        f"<b>{settings.effective_max_file_size_mb} MB</b>.\n\n"
+        f"{Emoji.PROGRESS} Fast streamed processing · live progress · auto cleanup",
+        reply_markup=back_to_menu(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "menu:help")
+async def menu_help(callback: CallbackQuery) -> None:
+    lang = await _language(callback)
+    await safe_edit(callback.message, help_text(lang), reply_markup=back_to_menu())
     await callback.answer()
 
 

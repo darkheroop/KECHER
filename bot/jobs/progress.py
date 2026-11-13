@@ -93,10 +93,11 @@ class ProgressReporter:
         self._min_interval = min_interval
         self._last_sent = float("-inf")
         self._last_percent = -1
+        self._finished = False
 
     @property
     def active(self) -> bool:
-        return bool(self._enabled and self._message_id is not None)
+        return bool(self._enabled and self._message_id is not None and not self._finished)
 
     async def update(
         self,
@@ -129,3 +130,4 @@ class ProgressReporter:
             return
         assert self._notifier is not None and self._chat_id is not None
         await self._notifier.edit(self._chat_id, self._message_id, text)  # type: ignore[arg-type]
+        self._finished = True

@@ -39,6 +39,28 @@ def test_max_file_size_bytes() -> None:
     assert settings.max_file_size_bytes == 100 * 1024 * 1024
 
 
+def test_cloud_transport_caps_downloads_at_20_mb() -> None:
+    settings = Settings(max_file_size_mb=60, telegram_api_base="")
+    assert settings.effective_max_file_size_mb == 20
+    assert settings.effective_max_file_size_bytes == 20 * 1024 * 1024
+
+
+def test_local_bot_api_enables_full_product_limit() -> None:
+    settings = Settings(
+        max_file_size_mb=60, telegram_api_base="http://telegram-bot-api:8081"
+    )
+    assert settings.local_bot_api_enabled is True
+    assert settings.effective_max_file_size_mb == 60
+
+
+def test_co_located_bot_api_uses_local_file_paths() -> None:
+    settings = Settings(
+        telegram_api_base="http://127.0.0.1:8081",
+        telegram_api_local_files=True,
+    )
+    assert settings.telegram_api_local_files is True
+
+
 def test_secret_values_redacts_db_password() -> None:
     settings = Settings(
         bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi",

@@ -83,6 +83,11 @@ class FileManager:
         check_file_size(incoming_bytes, self._settings)
         check_quota(self.usage_bytes(telegram_id), incoming_bytes, self._settings)
 
+    def check_stored_capacity(self, telegram_id: int, path: Path) -> None:
+        """Validate actual bytes after a streamed download has completed."""
+        check_file_size(path.stat().st_size, self._settings)
+        check_quota(self.usage_bytes(telegram_id), 0, self._settings)
+
     # -- allocation --------------------------------------------------------- #
     def allocate(
         self, telegram_id: int, original_name: str, *, subdir: str = "inbox"

@@ -32,6 +32,18 @@ def check_file_size(size_bytes: int, settings: Settings) -> None:
         )
 
 
+def check_ingest_size(size_bytes: int, settings: Settings) -> None:
+    """Validate an upload against both product and Telegram transport limits."""
+    check_file_size(size_bytes, settings)
+    if size_bytes > settings.effective_max_file_size_bytes:
+        raise LimitExceeded(
+            "Telegram cloud mode can download up to "
+            f"{settings.effective_max_file_size_mb} MB. Configure TELEGRAM_API_BASE "
+            f"for the full {settings.max_file_size_mb} MB large-file mode "
+            f"(got {human_size(size_bytes)})."
+        )
+
+
 def check_quota(current_usage_bytes: int, incoming_bytes: int, settings: Settings) -> None:
     """Raise :class:`LimitExceeded` if writing ``incoming_bytes`` would exceed quota."""
     projected = current_usage_bytes + incoming_bytes

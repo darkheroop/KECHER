@@ -144,9 +144,16 @@ def build_bot(settings: Settings) -> Bot:
     token = settings.bot_token.get_secret_value()
     default = DefaultBotProperties(parse_mode=ParseMode.HTML)
     if settings.telegram_api_base:
-        session = AiohttpSession(api=TelegramAPIServer.from_base(settings.telegram_api_base))
+        session = AiohttpSession(
+            api=TelegramAPIServer.from_base(
+                settings.telegram_api_base,
+                is_local=settings.telegram_api_local_files,
+            ),
+            timeout=max(60, settings.telegram_request_timeout_seconds),
+        )
         return Bot(token=token, session=session, default=default)
-    return Bot(token=token, default=default)
+    session = AiohttpSession(timeout=max(60, settings.telegram_request_timeout_seconds))
+    return Bot(token=token, session=session, default=default)
 
 
 async def retention_loop(files: FileManager) -> None:
@@ -194,6 +201,18 @@ async def run() -> None:
 
     await ensure_schema(settings)
     await load_into_settings(settings)
+
+    logger.info(
+        "File transport: %s (effective upload limit: %d MB, product limit: %d MB)",
+        "local Bot API" if settings.local_bot_api_enabled else "Telegram cloud Bot API",
+        settings.effective_max_file_size_mb,
+        settings.max_file_size_mb,
+    )
+    if settings.max_file_size_mb > 20 and not settings.local_bot_api_enabled:
+        logger.warning(
+            "Large-file mode is not active: set TELEGRAM_API_BASE to process files "
+            "above 20 MB"
+        )
 
     bot = build_bot(settings)
     files = FileManager(settings)

@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     # --- Telegram ---
     bot_token: SecretStr = SecretStr("")
     telegram_api_base: str = ""
+    # True only when the Bot API process shares this container's filesystem.
+    telegram_api_local_files: bool = False
 
     # --- Environment ---
     environment: str = "development"
@@ -43,7 +45,9 @@ class Settings(BaseSettings):
 
     # --- Storage ---
     storage_root: Path = Path("./var/storage")
-    max_file_size_mb: int = 2000
+    # Product policy. Telegram's cloud Bot API can only download 20 MiB; the
+    # full limit is available when TELEGRAM_API_BASE points to a local Bot API.
+    max_file_size_mb: int = 60
     user_disk_quota_mb: int = 5000
     # Appended to result file names, e.g. "cards_clean@Lord_Jat.txt".
     file_suffix: str = "@Lord_Jat"
@@ -60,6 +64,12 @@ class Settings(BaseSettings):
     # --- Document conversion ---
     libreoffice_path: str = "soffice"
     libreoffice_timeout_seconds: int = 120
+
+    # --- Telegram file transport ---
+    # Large datasets need longer than aiogram's 30-second download default.
+    telegram_download_timeout_seconds: int = 600
+    telegram_request_timeout_seconds: int = 600
+    telegram_download_chunk_kb: int = 1024
 
     # --- Authorized Telegram sources (optional Telethon account) ---
     # Get these from https://my.telegram.org. Never enter credentials into chat.
@@ -213,6 +223,21 @@ class Settings(BaseSettings):
     @property
     def max_file_size_bytes(self) -> int:
         return self.max_file_size_mb * 1024 * 1024
+
+    @property
+    def local_bot_api_enabled(self) -> bool:
+        return bool(self.telegram_api_base.strip())
+
+    @property
+    def effective_max_file_size_mb(self) -> int:
+        """Transport-aware upload limit (cloud Bot API downloads cap at 20 MiB)."""
+        return self.max_file_size_mb if self.local_bot_api_enabled else min(
+            self.max_file_size_mb, 20
+        )
+
+    @property
+    def effective_max_file_size_bytes(self) -> int:
+        return self.effective_max_file_size_mb * 1024 * 1024
 
     @property
     def user_disk_quota_bytes(self) -> int:
